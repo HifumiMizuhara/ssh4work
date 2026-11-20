@@ -11,7 +11,7 @@ import {
   scanPrivateKeys,
   writeClipboardText,
 } from './clipboard.js';
-import { ConfigStore, createProfile, readLocalSshConfig } from './config.js';
+import { ConfigStore, createProfile, DEFAULT_PLUGIN_REGISTRY_URL, readLocalSshConfig } from './config.js';
 import {
   buildClaudeLaunchCommand,
   buildQuickLaunchCommand,
@@ -38,6 +38,7 @@ import {
 import { checkSshEnvironment, launchInteractiveSsh, quoteSh, spawnEmbeddedSsh } from './ssh.js';
 import {
   aggregateTokenStats,
+  fetchRemotePluginRegistry,
   formatCostUsd,
   formatLocalDateTimeNow,
   formatTokenCount,
@@ -214,6 +215,8 @@ export class ClaudeVpsApp {
     this.store = new ConfigStore(configPath);
     this.term = new TerminalController();
     this.sshEnv = checkSshEnvironment();
+    this.remotePluginCache = [];
+    this.remotePluginSource = '';
 
     this.tab = 'profiles'; // 'profiles' | 'files' | 'sessions'
     this.statusMsg = this.sshEnv.hasSsh ? this.sshEnv.agentMessage : this.sshEnv.agentMessage;
@@ -1314,13 +1317,14 @@ export class ClaudeVpsApp {
         { key: 'enableAutoCopy', label: '界面选中自动复制 (true/false)', value: String(s.enableAutoCopy !== false) },
         { key: 'showMotd', label: '显示登录欢迎信息 MOTD (true/false)', value: String(s.showMotd !== false) },
         { key: 'theme', label: '配色主题 (cyber/emerald/amber/rose)', value: s.theme || 'cyber' },
+        { key: 'pluginRegistryUrl', label: '插件仓库源 (GitHub/URL)', value: s.pluginRegistryUrl || DEFAULT_PLUGIN_REGISTRY_URL },
       ],
     };
     this.render();
   }
 
   openPluginsModal() {
-    const catalog = this.plugins.listCatalog();
+    const catalog = this.plugins.mergeRemoteCatalog(this.remotePluginCache);
     this.modal = {
       type: 'plugins',
       title: '🧩 插件管理 (Plugins)',
@@ -1329,6 +1333,42 @@ export class ClaudeVpsApp {
       scroll: 0,
     };
     this.render();
+    if (this._running) {
+      this.refreshRemotePlugins({ silent: true }).catch(() => {});
+    }
+  }
+
+  async refreshRemotePlugins({ silent = false, fetchImpl } = {}) {
+    const sourceUrl = this.store.getSettings().pluginRegistryUrl || DEFAULT_PLUGIN_REGISTRY_URL;
+    if (!silent) {
+      this.setStatus(`正在从插件源同步: ${sourceUrl} ...`);
+      this.render();
+    }
+    const res = await fetchRemotePluginRegistry(sourceUrl, { fetchImpl });
+    if (!res.ok) {
+      if (!silent) {
+        this.setStatus(`同步插件源失败: ${res.error}`, true);
+        this.render();
+      }
+      return res;
+    }
+    this.remotePluginCache = res.plugins;
+    this.remotePluginSource = res.source;
+    if (this.modal?.type === 'plugins') {
+      const prevId = this.modal.catalog[this.modal.idx]?.id;
+      this.modal.catalog = this.plugins.mergeRemoteCatalog(this.remotePluginCache);
+      if (prevId) {
+        const nextIdx = this.modal.catalog.findIndex((p) => p.id === prevId);
+        if (nextIdx >= 0) this.modal.idx = nextIdx;
+      }
+    }
+    const updatable = this.plugins.mergeRemoteCatalog(this.remotePluginCache).filter((p) => p.hasUpdate).length;
+    if (!silent || updatable > 0 || res.plugins.length > 0) {
+      const updateTip = updatable > 0 ? `，发现 ${updatable} 个可更新` : '';
+      this.setStatus(`已同步插件源 (${res.plugins.length} 个插件${updateTip})`);
+      this.render();
+    }
+    return res;
   }
 
   async loadPulse() {
@@ -1848,8 +1888,15 @@ export class ClaudeVpsApp {
         if (this.modal?.type === 'plugins') {
           const p = this.modal.catalog[this.modal.idx];
           if (!p) return;
-          if (!p.installed) {
-            const res = this.plugins.install(p.id);
+          if (p.hasUpdate && p.remotePlugin) {
+            const res = this.plugins.installRemote(p.remotePlugin, { sourceUrl: this.remotePluginSource });
+            if (res.ok) this.setStatus(`已更新插件: ${p.name} (v${p.remotePlugin.version})`);
+            else this.setStatus(res.error || '更新失败', true);
+          } else if (!p.installed) {
+            const res =
+              p.remotePlugin && !p.builtin
+                ? this.plugins.installRemote(p.remotePlugin, { sourceUrl: this.remotePluginSource })
+                : this.plugins.install(p.id);
             if (res.ok) this.setStatus(`已安装并启用插件: ${p.name}`);
             else this.setStatus(res.error || '安装失败', true);
           } else {
@@ -1857,9 +1904,27 @@ export class ClaudeVpsApp {
             this.setStatus(enabled ? `已启用插件: ${p.name}` : `已禁用插件: ${p.name}`);
             if (!enabled && p.tab?.id === this.tab) this.tab = 'profiles';
           }
-          this.modal.catalog = this.plugins.listCatalog();
+          this.modal.catalog = this.plugins.mergeRemoteCatalog(this.remotePluginCache);
           this.render();
         }
+        return;
+      case 'pluginSyncRemote':
+        await this.refreshRemotePlugins({ silent: false });
+        return;
+      case 'pluginEditSource':
+        this.openInputModal({
+          title: '设置插件仓库源',
+          prompt: '输入 GitHub 仓库 (如 owner/repo 或 URL) 或 registry.json 地址 (留空恢复默认):',
+          initialValue: this.store.getSettings().pluginRegistryUrl || DEFAULT_PLUGIN_REGISTRY_URL,
+          onSubmit: async (val) => {
+            const nextUrl = String(val || '').trim() || DEFAULT_PLUGIN_REGISTRY_URL;
+            this.store.updateSettings({ pluginRegistryUrl: nextUrl });
+            this.remotePluginCache = [];
+            this.remotePluginSource = '';
+            this.openPluginsModal();
+            await this.refreshRemotePlugins({ silent: false });
+          },
+        });
         return;
       case 'pluginUninstall':
         if (this.modal?.type === 'plugins') {
@@ -1867,7 +1932,7 @@ export class ClaudeVpsApp {
           if (!p || !p.installed) return;
           this.plugins.uninstall(p.id);
           if (p.tab?.id === this.tab) this.tab = 'profiles';
-          this.modal.catalog = this.plugins.listCatalog();
+          this.modal.catalog = this.plugins.mergeRemoteCatalog(this.remotePluginCache);
           this.modal.idx = Math.max(0, Math.min(this.modal.idx, this.modal.catalog.length - 1));
           this.setStatus(`已卸载插件: ${p.name}`);
           this.render();
@@ -3424,6 +3489,8 @@ export class ClaudeVpsApp {
       else if (ev.char === 's' || ev.char === 'c') return this.dispatchAction('openPluginServers');
       else if (ev.char === 'd' || ev.name === 'delete') return this.dispatchAction('pluginUninstall');
       else if (ev.char === 'i') return this.dispatchAction('pluginInstallLocal');
+      else if (ev.char === 'f') return this.dispatchAction('pluginSyncRemote');
+      else if (ev.char === 'r') return this.dispatchAction('pluginEditSource');
       this.render();
       return;
     }
@@ -4395,28 +4462,45 @@ export class ClaudeVpsApp {
         const sel = idx === m.idx;
         const rowY = inner.y + i;
         const srvDisabled = targetSrv ? this.plugins.isDisabledForProfile(p.id, targetSrv) : false;
-        const badge = !p.installed
-          ? '[未安装]'
-          : !p.enabled
-            ? '[○ 已禁用]'
-            : srvDisabled
-              ? '[⊘ 本服禁用]'
-              : '[✓ 已启用]';
-        const text = `${sel ? '> ' : '  '}${badge} ${p.name} v${p.version} - ${p.description}`;
+        const badge = p.hasUpdate
+          ? `[⬆ 可更新 v${p.remoteVersion}]`
+          : !p.installed
+            ? p.remoteAvailable && !p.builtin
+              ? '[☁ 远端可下载]'
+              : '[未安装]'
+            : !p.enabled
+              ? '[○ 已禁用]'
+              : srvDisabled
+                ? '[⊘ 本服禁用]'
+                : '[✓ 已启用]';
+        const catTag = p.category ? `[${p.category}] ` : '';
+        const text = `${sel ? '> ' : '  '}${badge} ${catTag}${p.name} v${p.version} - ${p.description}`;
         scr.writeAt(
           inner.x,
           rowY,
           padEndWidth(truncateToWidth(text, inner.w), inner.w),
-          sel ? `${ANSI.bg.cyan}${ANSI.fg.black}${ANSI.bold}` : p.enabled && !srvDisabled ? ANSI.fg.brightGreen : bg
+          sel
+            ? `${ANSI.bg.cyan}${ANSI.fg.black}${ANSI.bold}`
+            : p.hasUpdate
+              ? ANSI.fg.brightYellow
+              : p.enabled && !srvDisabled
+                ? ANSI.fg.brightGreen
+                : !p.installed && p.remoteAvailable && !p.builtin
+                  ? ANSI.fg.brightCyan
+                  : bg
         );
         scr.addHitBox(inner.x, rowY, inner.x + inner.w - 1, rowY, 'pluginSelect', idx);
       }
+      const curPlugin = m.catalog[m.idx];
+      const primaryLabel = curPlugin?.hasUpdate ? '⬆ 更新' : '✓ 安装/启停';
       let bx = inner.x;
-      bx = scr.drawButton(bx, inner.y + inner.h - 1, '✓ 安装/启停', 'pluginToggleOrInstall', null, { primary: true });
-      bx = scr.drawButton(bx, inner.y + inner.h - 1, '⚙ 服务器权限', 'openPluginServers');
-      bx = scr.drawButton(bx, inner.y + inner.h - 1, '📦 本地安装', 'pluginInstallLocal');
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, primaryLabel, 'pluginToggleOrInstall', null, { primary: true });
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, '🔄 同步', 'pluginSyncRemote');
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, '🌐 源设置', 'pluginEditSource');
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, '⚙ 权限', 'openPluginServers');
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, '📦 本地', 'pluginInstallLocal');
       bx = scr.drawButton(bx, inner.y + inner.h - 1, '✕ 卸载', 'pluginUninstall', null, { danger: true });
-      scr.drawButton(bx, inner.y + inner.h - 1, '关闭 (Esc)', 'modalCancel');
+      scr.drawButton(bx, inner.y + inner.h - 1, '关闭', 'modalCancel');
     } else if (m.type === 'pluginServerConfig') {
       const servers = this.store.list();
       const viewH = inner.h - 2;

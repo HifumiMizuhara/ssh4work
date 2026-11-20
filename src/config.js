@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+export const DEFAULT_PLUGIN_REGISTRY_URL = 'https://github.com/is-hp-is-mad/ssh2work-plugins';
+
 export function getDefaultConfigPath() {
   if (process.env.CLAUDE_VPS_CONFIG) {
     return process.env.CLAUDE_VPS_CONFIG;
@@ -29,6 +31,9 @@ export function createDefaultSettings(input = {}) {
     enableAutoCopy: input.enableAutoCopy !== undefined ? Boolean(input.enableAutoCopy) : true,
     showMotd: input.showMotd !== undefined ? Boolean(input.showMotd) : true,
     theme: ['cyber', 'emerald', 'amber', 'rose'].includes(input.theme) ? input.theme : 'cyber',
+    pluginRegistryUrl:
+      String(input.pluginRegistryUrl ?? DEFAULT_PLUGIN_REGISTRY_URL).trim() ||
+      DEFAULT_PLUGIN_REGISTRY_URL,
   };
 }
 

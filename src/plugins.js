@@ -1,5 +1,145 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_PLUGIN_REGISTRY_URL } from './config.js';
+
+export function compareSemver(a, b) {
+  const parse = (v) =>
+    String(v || '0')
+      .trim()
+      .replace(/^v/i, '')
+      .split('-')[0]
+      .split('.')
+      .map((n) => Number.parseInt(n, 10) || 0);
+  const pa = parse(a);
+  const pb = parse(b);
+  const len = Math.max(pa.length, pb.length, 3);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+/**
+ * Normalize a plugin registry source string (GitHub repo URL, owner/repo, or direct registry.json URL).
+ */
+export function normalizeRegistrySource(input) {
+  const raw = String(input || '').trim() || DEFAULT_PLUGIN_REGISTRY_URL;
+  const ghUrl = raw.match(/^https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:\/tree\/([^/\s#?]+))?\/?$/i);
+  if (ghUrl) {
+    const [, owner, repo, branch = 'main'] = ghUrl;
+    return {
+      kind: 'github',
+      owner,
+      repo,
+      branch,
+      display: `https://github.com/${owner}/${repo}`,
+      rawRegistryUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/registry.json`,
+      rawBaseUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}`,
+      apiTreeUrl: `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+    };
+  }
+  const ghShort = raw.match(/^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/);
+  if (ghShort) {
+    const [, owner, repo] = ghShort;
+    const branch = 'main';
+    return {
+      kind: 'github',
+      owner,
+      repo,
+      branch,
+      display: `https://github.com/${owner}/${repo}`,
+      rawRegistryUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/registry.json`,
+      rawBaseUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}`,
+      apiTreeUrl: `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+    };
+  }
+  return {
+    kind: 'json',
+    display: raw,
+    rawRegistryUrl: raw,
+  };
+}
+
+function sanitizePluginManifest(parsed, fallbackCategory = '') {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const id = String(parsed.id || '').trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(parsed.name || id).trim(),
+    version: String(parsed.version || '1.0.0'),
+    author: String(parsed.author || 'community'),
+    category: String(parsed.category || fallbackCategory || 'general'),
+    description: String(parsed.description || '远程插件'),
+    tab: parsed.tab && parsed.tab.id ? parsed.tab : null,
+    quickCommands: Array.isArray(parsed.quickCommands) ? parsed.quickCommands : [],
+  };
+}
+
+/**
+ * Fetch and parse remote plugin catalog from a registry URL or GitHub repository.
+ */
+export async function fetchRemotePluginRegistry(
+  sourceInput = DEFAULT_PLUGIN_REGISTRY_URL,
+  { fetchImpl = globalThis.fetch, timeoutMs = 12000 } = {}
+) {
+  if (typeof fetchImpl !== 'function') {
+    return { ok: false, source: String(sourceInput || ''), plugins: [], error: '当前环境不支持 fetch' };
+  }
+  const src = normalizeRegistrySource(sourceInput);
+  const fetchJson = async (url) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const resp = await fetchImpl(url, {
+        signal: ctrl.signal,
+        headers: { 'User-Agent': 'ssh2work', Accept: 'application/json' },
+      });
+      if (!resp.ok) return { ok: false, status: resp.status, data: null };
+      return { ok: true, status: resp.status, data: await resp.json() };
+    } catch (err) {
+      return { ok: false, status: 0, error: err?.name === 'AbortError' ? '请求超时' : err?.message || '网络错误' };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const regRes = await fetchJson(src.rawRegistryUrl);
+  if (regRes.ok && regRes.data) {
+    const rawList = Array.isArray(regRes.data) ? regRes.data : Array.isArray(regRes.data.plugins) ? regRes.data.plugins : [];
+    const plugins = rawList.map((p) => sanitizePluginManifest(p)).filter(Boolean);
+    return { ok: true, source: src.display, resolvedUrl: src.rawRegistryUrl, plugins, error: '' };
+  }
+
+  // Fallback for GitHub repositories without a prebuilt registry.json
+  if (src.kind === 'github') {
+    const treeRes = await fetchJson(src.apiTreeUrl);
+    if (treeRes.ok && Array.isArray(treeRes.data?.tree)) {
+      const manifestPaths = treeRes.data.tree
+        .filter((n) => n.type === 'blob' && /^plugins\/[^/]+\/[^/]+\/plugin\.json$/.test(n.path))
+        .map((n) => n.path);
+      const loaded = await Promise.all(
+        manifestPaths.map(async (p) => {
+          const r = await fetchJson(`${src.rawBaseUrl}/${p}`);
+          if (!r.ok || !r.data) return null;
+          const parts = p.split('/');
+          return sanitizePluginManifest(r.data, parts[1] || 'general');
+        })
+      );
+      const plugins = loaded.filter(Boolean);
+      return { ok: true, source: src.display, resolvedUrl: src.apiTreeUrl, plugins, error: '' };
+    }
+  }
+
+  return {
+    ok: false,
+    source: src.display,
+    resolvedUrl: src.rawRegistryUrl,
+    plugins: [],
+    error: regRes.error || (regRes.status ? `HTTP ${regRes.status}` : '无法读取插件源'),
+  };
+}
 
 export const BUILTIN_PLUGINS = [
   {
@@ -78,9 +218,11 @@ export class PluginManager {
 
   listAllDefinitions() {
     const st = this._state();
-    const custom = Array.isArray(st.custom) ? st.custom : [];
-    const seen = new Set(BUILTIN_PLUGINS.map((p) => p.id));
-    return [...BUILTIN_PLUGINS, ...custom.filter((c) => c && c.id && !seen.has(c.id))];
+    const custom = Array.isArray(st.custom) ? st.custom.filter((c) => c && c.id) : [];
+    const customById = new Map(custom.map((c) => [c.id, c]));
+    const mergedBuiltins = BUILTIN_PLUGINS.map((b) => (customById.has(b.id) ? { ...b, ...customById.get(b.id) } : b));
+    const builtinIds = new Set(BUILTIN_PLUGINS.map((p) => p.id));
+    return [...mergedBuiltins, ...custom.filter((c) => !builtinIds.has(c.id))];
   }
 
   listCatalog() {
@@ -91,6 +233,57 @@ export class PluginManager {
       installed: st.installed.includes(p.id),
       enabled: st.installed.includes(p.id) && st.enabled.includes(p.id),
     }));
+  }
+
+  mergeRemoteCatalog(remotePlugins = []) {
+    const local = this.listCatalog();
+    const byId = new Map(local.map((p) => [p.id, { ...p, remoteAvailable: false, hasUpdate: false }]));
+    for (const rp of remotePlugins || []) {
+      if (!rp?.id) continue;
+      const existing = byId.get(rp.id);
+      if (existing) {
+        const hasUpdate = existing.installed && compareSemver(rp.version, existing.version) > 0;
+        byId.set(rp.id, {
+          ...existing,
+          category: rp.category || existing.category || '',
+          remoteAvailable: true,
+          remoteVersion: rp.version,
+          hasUpdate,
+          remotePlugin: rp,
+        });
+      } else {
+        byId.set(rp.id, {
+          ...rp,
+          builtin: false,
+          installed: false,
+          enabled: false,
+          remoteAvailable: true,
+          remoteVersion: rp.version,
+          hasUpdate: false,
+          remotePlugin: rp,
+        });
+      }
+    }
+    return [...byId.values()];
+  }
+
+  installRemote(pluginDef, { sourceUrl = '' } = {}) {
+    const clean = sanitizePluginManifest(pluginDef);
+    if (!clean) return { ok: false, error: '无效的远程插件清单' };
+    const st = this._state();
+    if (!Array.isArray(st.custom)) st.custom = [];
+    const entry = {
+      ...clean,
+      ...(sourceUrl ? { sourceUrl } : {}),
+    };
+    const existingIdx = st.custom.findIndex((c) => c.id === clean.id);
+    const updated = existingIdx >= 0 || st.installed.includes(clean.id);
+    if (existingIdx >= 0) st.custom[existingIdx] = entry;
+    else st.custom.push(entry);
+    if (!st.installed.includes(clean.id)) st.installed.push(clean.id);
+    if (!st.enabled.includes(clean.id)) st.enabled.push(clean.id);
+    this.store.save();
+    return { ok: true, plugin: entry, updated };
   }
 
   isInstalled(id) {

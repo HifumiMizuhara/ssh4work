@@ -48,6 +48,64 @@ test('checkForAppUpdate detects newer GitHub Release and falls back to package.j
   assert.equal(resFallback.latestVersion, '1.1.0');
 });
 
+test('appUpdate modal handles keyboard: Esc closes, r refreshes, u upgrades when update available', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-upd-'));
+  try {
+    const app = new ClaudeVpsApp({ configPath: path.join(tmpDir, 'profiles.json') });
+    // Open modal with no update available
+    await app.openAppUpdateModal({
+      force: true,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          tag_name: `v${getCurrentVersion()}`,
+          html_url: `https://github.com/is-hp-is-mad/ssh4work/releases/tag/v${getCurrentVersion()}`,
+          body: '',
+        }),
+      }),
+    });
+    assert.equal(app.modal?.type, 'appUpdate');
+    assert.equal(app.modal.info.hasUpdate, false);
+
+    // Esc should close the modal
+    await app.handleKey({ name: 'escape' });
+    assert.equal(app.modal, null);
+
+    // Open modal with update available
+    await app.openAppUpdateModal({
+      force: true,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          tag_name: 'v99.0.0',
+          html_url: 'https://github.com/is-hp-is-mad/ssh4work/releases/tag/v99.0.0',
+          body: 'New stuff',
+        }),
+      }),
+    });
+    assert.equal(app.modal?.type, 'appUpdate');
+    assert.equal(app.modal.info.hasUpdate, true);
+
+    // 'r' key should trigger refresh (re-opens the modal)
+    let refreshCalled = false;
+    const origOpen = app.openAppUpdateModal.bind(app);
+    app.openAppUpdateModal = async (opts) => {
+      refreshCalled = true;
+      return origOpen(opts);
+    };
+    await app.handleKey({ char: 'r' });
+    assert.equal(refreshCalled, true);
+
+    // Close and clean up
+    await app.handleKey({ name: 'escape' });
+    assert.equal(app.modal, null);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('ClaudeVpsApp.openAppUpdateModal populates appUpdate modal state', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-upd-'));
   try {

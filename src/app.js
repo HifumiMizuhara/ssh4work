@@ -3981,6 +3981,12 @@ export class ClaudeVpsApp {
       this.render();
       return;
     }
+    if (m.type === 'appUpdate') {
+      if (ev.char === 'r' || ev.name === 'f5') return this.dispatchAction('refreshAppUpdate');
+      if (m.info?.hasUpdate && (ev.char === 'u' || ev.name === 'enter')) return this.dispatchAction('runAppUpgrade');
+      this.render();
+      return;
+    }
     if (m.type === 'actionPalette') {
       if (ev.name === 'up' && m.items.length > 0) m.idx = Math.max(0, m.idx - 1);
       else if (ev.name === 'down' && m.items.length > 0) m.idx = Math.min(m.items.length - 1, m.idx + 1);

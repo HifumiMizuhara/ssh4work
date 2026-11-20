@@ -25,7 +25,7 @@ export function createDefaultSettings(input = {}) {
     enableImageClipboard:
       input.enableImageClipboard !== undefined
         ? Boolean(input.enableImageClipboard)
-        : process.platform === 'win32',
+        : true,
     enableAutoCopy: input.enableAutoCopy !== undefined ? Boolean(input.enableAutoCopy) : true,
     showMotd: input.showMotd !== undefined ? Boolean(input.showMotd) : true,
     theme: ['cyber', 'emerald', 'amber', 'rose'].includes(input.theme) ? input.theme : 'cyber',
@@ -119,10 +119,17 @@ export class ConfigStore {
 
   save() {
     const dir = path.dirname(this.filePath);
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const tmp = `${this.filePath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, this.filePath);
+    if (process.platform !== 'win32') {
+      try {
+        fs.chmodSync(this.filePath, 0o600);
+      } catch {
+        // Ignore chmod errors on non-standard filesystems
+      }
+    }
   }
 
   getSettings() {

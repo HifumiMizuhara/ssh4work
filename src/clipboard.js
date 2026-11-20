@@ -129,17 +129,125 @@ if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
 exit 1
 `;
 
-export function readClipboardPngBuffer() {
-  if (process.platform !== 'win32') return null;
-  const encoded = Buffer.from(WIN_CLIP_ONCE_PS, 'utf16le').toString('base64');
-  const res = spawnSync('powershell', ['-NoProfile', '-STA', '-EncodedCommand', encoded], {
-    encoding: 'utf8',
-    windowsHide: true,
-    maxBuffer: 32 * 1024 * 1024,
+const CLIP_MAX_BUFFER = 64 * 1024 * 1024;
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+function hasCommand(cmd) {
+  if (process.platform === 'win32') return false;
+  const res = spawnSync('sh', ['-c', `command -v ${cmd}`], { stdio: ['ignore', 'pipe', 'ignore'] });
+  return res.status === 0;
+}
+
+let _imageBackend;
+
+/**
+ * Detect which local clipboard image backend is usable on this machine.
+ * Returns 'win32' | 'darwin' | 'wayland' | 'x11' | null.
+ */
+export function detectClipboardImageBackend() {
+  if (_imageBackend !== undefined) return _imageBackend;
+  if (process.platform === 'win32') _imageBackend = 'win32';
+  else if (process.platform === 'darwin') _imageBackend = 'darwin';
+  else if (process.env.WAYLAND_DISPLAY && hasCommand('wl-paste')) _imageBackend = 'wayland';
+  else if (process.env.DISPLAY && hasCommand('xclip')) _imageBackend = 'x11';
+  else _imageBackend = null;
+  return _imageBackend;
+}
+
+function osascriptPngArgs() {
+  return ['-e', 'try', '-e', 'return (the clipboard as «class PNGf»)', '-e', 'end try'];
+}
+
+export function parseOsascriptPng(stdout) {
+  const m = String(stdout || '').match(/«data PNGf([0-9A-Fa-f]+)»/);
+  return m ? Buffer.from(m[1], 'hex') : null;
+}
+
+function isPng(buf) {
+  return Buffer.isBuffer(buf) && buf.length > 8 && buf.subarray(0, 4).equals(PNG_MAGIC);
+}
+
+function runCapture(cmd, args, { asText = false } = {}) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    } catch {
+      resolve(null);
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    const timer = setTimeout(() => child.kill(), 5000);
+    child.stdout.on('data', (c) => {
+      size += c.length;
+      if (size > CLIP_MAX_BUFFER) child.kill();
+      else chunks.push(c);
+    });
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return resolve(null);
+      const buf = Buffer.concat(chunks);
+      resolve(asText ? buf.toString('utf8') : buf);
+    });
   });
-  if (res.status !== 0 || !res.stdout) return null;
-  const b64 = res.stdout.trim();
-  return b64 ? Buffer.from(b64, 'base64') : null;
+}
+
+/**
+ * Asynchronously read a PNG image from the local clipboard on macOS / Linux (non-blocking).
+ */
+async function readClipboardPngBufferPosix(backend) {
+  if (backend === 'darwin') {
+    return parseOsascriptPng(await runCapture('osascript', osascriptPngArgs(), { asText: true }));
+  }
+  if (backend === 'wayland') {
+    const types = await runCapture('wl-paste', ['--list-types'], { asText: true });
+    if (!types || !/^image\/png$/m.test(types)) return null;
+    const buf = await runCapture('wl-paste', ['--no-newline', '--type', 'image/png']);
+    return isPng(buf) ? buf : null;
+  }
+  if (backend === 'x11') {
+    const targets = await runCapture('xclip', ['-selection', 'clipboard', '-t', 'TARGETS', '-o'], { asText: true });
+    if (!targets || !/^image\/png$/m.test(targets)) return null;
+    const buf = await runCapture('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o']);
+    return isPng(buf) ? buf : null;
+  }
+  return null;
+}
+
+/**
+ * Read a PNG image from the local clipboard (Windows / macOS / Linux Wayland / Linux X11).
+ */
+export function readClipboardPngBuffer() {
+  const backend = detectClipboardImageBackend();
+  if (backend === 'win32') {
+    const encoded = Buffer.from(WIN_CLIP_ONCE_PS, 'utf16le').toString('base64');
+    const res = spawnSync('powershell', ['-NoProfile', '-STA', '-EncodedCommand', encoded], {
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    if (res.status !== 0 || !res.stdout) return null;
+    const b64 = res.stdout.trim();
+    return b64 ? Buffer.from(b64, 'base64') : null;
+  }
+  if (backend === 'darwin') {
+    const res = spawnSync('osascript', osascriptPngArgs(), { encoding: 'utf8', maxBuffer: CLIP_MAX_BUFFER, timeout: 5000 });
+    return res.status === 0 ? parseOsascriptPng(res.stdout) : null;
+  }
+  if (backend === 'wayland') {
+    const res = spawnSync('wl-paste', ['--no-newline', '--type', 'image/png'], { maxBuffer: CLIP_MAX_BUFFER, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return res.status === 0 && isPng(res.stdout) ? res.stdout : null;
+  }
+  if (backend === 'x11') {
+    const res = spawnSync('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], { maxBuffer: CLIP_MAX_BUFFER, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return res.status === 0 && isPng(res.stdout) ? res.stdout : null;
+  }
+  return null;
 }
 
 /**
@@ -216,9 +324,10 @@ export PROMPT_COMMAND='case ":$PATH:" in *":$CLIP_BIN:"*) ;; *) export PATH="$CL
 trap 'rm -rf "$CLIP_DIR" "$CLIP_IMG" "$CLIP_IMG.tmp" "$CLIP_TTY"' EXIT
 `.trim();
 
-  // Single-line safe wrapper using sh -c or direct semicolon-free eval via base64
+  // Single-line safe wrapper via base64 (GNU/busybox `base64 -d`, falls back to BSD/macOS `base64 -D`)
   const b64 = Buffer.from(shimScript, 'utf8').toString('base64');
-  return `eval "$(printf '%s' ${quoteSh(b64)} | base64 -d)"`;
+  const q = quoteSh(b64);
+  return `eval "$(printf '%s' ${q} | base64 -d 2>/dev/null || printf '%s' ${q} | base64 -D)"`;
 }
 
 /**
@@ -237,8 +346,13 @@ export class ClipboardImageSync {
   }
 
   start() {
-    if (process.platform !== 'win32') return;
     this._stopped = false;
+    const backend = detectClipboardImageBackend();
+    if (!backend) return;
+    if (backend !== 'win32') {
+      this._startPosixPolling(backend);
+      return;
+    }
     const encoded = Buffer.from(WIN_CLIP_WATCH_PS, 'utf16le').toString('base64');
     this._proc = spawn('powershell', ['-NoProfile', '-STA', '-EncodedCommand', encoded], {
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -271,8 +385,45 @@ export class ClipboardImageSync {
     this._proc.on('error', () => {});
   }
 
+  /**
+   * macOS / Linux: poll the clipboard asynchronously (never blocks the event loop)
+   * and push only when the PNG content hash changes.
+   */
+  _startPosixPolling(backend) {
+    let lastHash = '';
+    let busy = false;
+    const tick = async () => {
+      if (this._stopped || busy) return;
+      busy = true;
+      try {
+        const png = await readClipboardPngBufferPosix(backend);
+        if (this._stopped || !png || png.length === 0) return;
+        const hash = crypto.createHash('sha1').update(png).digest('hex');
+        if (hash === lastHash) return;
+        lastHash = hash;
+        this._pushQueue = this._pushQueue
+          .then(() => pushClipboardPngToRemote(this.profile, this.token, png, this.settings))
+          .catch(() => {});
+      } catch {
+        // Ignore transient clipboard read errors
+      } finally {
+        busy = false;
+      }
+    };
+    this._pollTimer = setInterval(tick, 1200);
+    this._pollTimer.unref?.();
+    tick();
+  }
+
   async pushNow() {
-    const png = readClipboardPngBuffer();
+    const backend = detectClipboardImageBackend();
+    if (!backend) {
+      return {
+        ok: false,
+        error: '本机未检测到图片剪贴板工具 (Linux 需安装 wl-clipboard 或 xclip)',
+      };
+    }
+    const png = backend === 'win32' ? readClipboardPngBuffer() : await readClipboardPngBufferPosix(backend);
     if (!png || png.length === 0) {
       return { ok: false, error: '剪贴板中暂无图片' };
     }
@@ -286,6 +437,10 @@ export class ClipboardImageSync {
   stop() {
     this._stopped = true;
     this._buf = '';
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
     if (this._proc) {
       try {
         this._proc.kill();
@@ -310,15 +465,18 @@ export function readClipboardText() {
     return res.status === 0 ? String(res.stdout || '') : '';
   }
   if (process.platform === 'darwin') {
-    const res = spawnSync('pbpaste', [], { encoding: 'utf8' });
+    const res = spawnSync('pbpaste', [], { encoding: 'utf8', timeout: 5000 });
     return res.status === 0 ? String(res.stdout || '') : '';
   }
-  for (const [cmd, args] of [
-    ['wl-paste', ['-n']],
-    ['xclip', ['-selection', 'clipboard', '-o']],
-    ['xsel', ['--clipboard', '--output']],
-  ]) {
-    const res = spawnSync(cmd, args, { encoding: 'utf8' });
+  const candidates = [];
+  if (process.env.WAYLAND_DISPLAY) candidates.push(['wl-paste', ['-n']]);
+  if (process.env.DISPLAY) {
+    candidates.push(['xclip', ['-selection', 'clipboard', '-o']]);
+    candidates.push(['xsel', ['--clipboard', '--output']]);
+  }
+  candidates.push(['termux-clipboard-get', []]);
+  for (const [cmd, args] of candidates) {
+    const res = spawnSync(cmd, args, { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
     if (res.status === 0) return String(res.stdout || '');
   }
   return '';
@@ -345,16 +503,20 @@ export function writeClipboardText(text) {
     return res.status === 0;
   }
   if (process.platform === 'darwin') {
-    const res = spawnSync('pbcopy', [], { input: val, encoding: 'utf8' });
+    const res = spawnSync('pbcopy', [], { input: val, encoding: 'utf8', timeout: 5000 });
     return res.status === 0;
   }
-  for (const [cmd, args] of [
-    ['wl-copy', []],
-    ['xclip', ['-selection', 'clipboard']],
-    ['xsel', ['--clipboard', '--input']],
-    ['termux-clipboard-set', []],
-  ]) {
-    const res = spawnSync(cmd, args, { input: val, encoding: 'utf8' });
+  // NOTE: wl-copy / xclip fork a background process that keeps serving the selection.
+  // stdout/stderr MUST be ignored, otherwise spawnSync waits on the inherited pipe forever.
+  const candidates = [];
+  if (process.env.WAYLAND_DISPLAY) candidates.push(['wl-copy', []]);
+  if (process.env.DISPLAY) {
+    candidates.push(['xclip', ['-selection', 'clipboard']]);
+    candidates.push(['xsel', ['--clipboard', '--input']]);
+  }
+  candidates.push(['termux-clipboard-set', []]);
+  for (const [cmd, args] of candidates) {
+    const res = spawnSync(cmd, args, { input: val, timeout: 5000, stdio: ['pipe', 'ignore', 'ignore'] });
     if (res.status === 0) return true;
   }
   if (process.stdout?.isTTY) {

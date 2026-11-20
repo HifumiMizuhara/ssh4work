@@ -154,14 +154,19 @@ ssh2work/
 │   │   └── vterm.js           # 内嵌式轻量级 VT100/ANSI 虚拟终端仿真器 (支持 2000 行历史回滚、Alt Screen、TrueColor 与 OSC 52)
 │   └── utils/
 │       └── text.js            # Unicode / CJK / Emoji 终端显示列宽计算、安全截断与对齐工具函数
+├── docs/
+│   └── PLUGINS.md             # 插件系统使用指南与自定义 plugin.json 开发规范
 ├── tests/
 │   ├── app.test.js            # 应用核心流程、多标签切换、插件系统、特权模式与 Token 统计单元测试
 │   ├── config.test.js         # 配置存储 CRUD 与 ~/.ssh/config 解析测试
 │   ├── mouse.test.js          # SGR 鼠标/触控事件解析、ScreenBuffer Diff 渲染与 VirtualTerminal 仿真测试
+│   ├── platform.test.js       # Windows / Linux / macOS 跨平台适配单元测试
 │   ├── remote.test.js         # SSH 命令构建、内存剪贴板垫片生成与私钥权限规范化测试
 │   └── text.test.js           # 中英文混合宽度计算与截断测试
 ├── claude-vps.ps1             # Windows PowerShell 快捷启动脚本
+├── claude-vps.sh              # Linux / macOS POSIX Shell 快捷启动脚本
 ├── package.json               # 项目清单 (零第三方 dependencies，Node.js >= 20)
+├── .gitattributes             # 跨平台换行符规范 (仓库内统一 LF，Windows .ps1/.cmd 保持 CRLF)
 ├── .gitignore                 # 严格忽略本地私钥 (*.pem, *.key, keys/) 与个人配置 (.claude-vps/, profiles.json)
 ├── LICENSE                    # MIT 开源许可证
 └── README.md                  # 项目文档
@@ -190,10 +195,16 @@ node ./bin/claude-vps.js
 npm start
 ```
 
-在 Windows PowerShell 下也可以直接运行启动脚本：
+在 Windows PowerShell 或 Linux / macOS 下也可以直接运行对应启动脚本：
 
 ```powershell
+# Windows PowerShell
 .\claude-vps.ps1
+```
+
+```bash
+# Linux / macOS
+./claude-vps.sh
 ```
 
 如果你希望在系统任意目录随时随地通过命令行启动，可执行全局链接：
@@ -215,7 +226,7 @@ ssh2work --config /path/to/my-profiles.json
 
 ### 运行测试
 
-本项目使用 Node.js 原生测试运行器（`node:test`），包含 26 项完整单元测试：
+本项目使用 Node.js 原生测试运行器（`node:test`），包含 30 项完整单元测试：
 
 ```bash
 npm test
@@ -237,11 +248,11 @@ npm test
 | `pi-cli` | **Pi Agent 助手** | 扫描 `~/.pi/agent/sessions` 会话、检索/预览/`pi` 恢复、全局 `AGENTS.md`、Skills 与 MCP 管理 |
 | `opencode-cli` | **OpenCode 助手** | 扫描 OpenCode 会话、检索/预览/`opencode` 恢复、全局 `AGENTS.md`、Skills 与 `opencode.json` MCP 管理 |
 
-> **按服务器独立开关插件**：在插件管理弹窗中选中任意已启用插件，点击 **`[服务器配置]`**（或按 `s` 键），即可针对不同 VPS 单独启用或禁用该插件（自动跳过未安装对应工具的服务器）。
+> **按服务器独立开关插件**：在插件管理弹窗中选中任意已启用插件，点击 **`[⚙ 服务器权限]`**（或按 `s` 键），即可针对不同 VPS 单独启用或禁用该插件（自动跳过未安装对应工具的服务器）。
 
 ### 编写自定义本地插件 (`plugin.json`)
 
-你可以通过编写一个简单的 `plugin.json` 清单文件，将自己常用的远程运维或远程开发命令集打包为插件并在插件中心按 `a` 键导入：
+你可以通过编写一个简单的 `plugin.json` 清单文件，将自己常用的远程运维或远程开发命令集打包为插件并在插件中心按 `i` 键（或点击 **`[📦 本地安装]`**）导入：
 
 ```json
 {
@@ -266,6 +277,8 @@ npm test
   ]
 }
 ```
+
+> 完整的字段规范、内置插件远程路径约定及二次开发指南，请参阅 **[插件系统与开发文档 (docs/PLUGINS.md)](docs/PLUGINS.md)**。
 
 ---
 

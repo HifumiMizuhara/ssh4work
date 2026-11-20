@@ -51,7 +51,8 @@ export function buildSshArgs(profile, { batch = true, forceTty = false, settings
     args.push('-p', String(profile.port));
   }
   if (profile.identityFile) {
-    args.push('-i', profile.identityFile);
+    const resolvedKey = String(profile.identityFile).replace(/^~(?=$|[\\/])/, os.homedir());
+    args.push('-i', resolvedKey);
   }
   if (profile.proxyJump) {
     args.push('-J', profile.proxyJump);
@@ -149,9 +150,18 @@ export function ensureAskpassScript() {
     fs.writeFileSync(p, content, 'utf8');
     _askpassPath = p;
   } else {
-    const p = path.join(os.tmpdir(), 'claude-vps-askpass.sh');
     const content = `#!/bin/sh\nexec "${nodeExe}" -e "process.stdout.write((process.env.CLAUDE_VPS_SSH_PW||'')+'\\n')"\n`;
-    fs.writeFileSync(p, content, { encoding: 'utf8', mode: 0o700 });
+    let p = '';
+    try {
+      const cfgDir = path.join(os.homedir(), '.claude-vps');
+      fs.mkdirSync(cfgDir, { recursive: true, mode: 0o700 });
+      p = path.join(cfgDir, 'claude-vps-askpass.sh');
+      fs.writeFileSync(p, content, { encoding: 'utf8', mode: 0o700 });
+    } catch {
+      const uid = typeof process.getuid === 'function' ? process.getuid() : process.pid;
+      p = path.join(os.tmpdir(), `claude-vps-askpass-${uid}.sh`);
+      fs.writeFileSync(p, content, { encoding: 'utf8', mode: 0o700 });
+    }
     try {
       fs.chmodSync(p, 0o700);
     } catch {
@@ -186,9 +196,11 @@ export function runRemote(
     const args = buildSshArgs(profile, { batch: true, settings });
     args.push(remoteCommand);
 
+    const useDetached = process.platform !== 'win32' && Boolean(profile?.password);
     const child = spawn('ssh', args, {
       stdio: [stdinData !== null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       env: buildSshSpawnEnv(profile),
+      detached: useDetached,
       windowsHide: true,
     });
 
@@ -199,7 +211,15 @@ export function runRemote(
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        child.kill();
+        if (useDetached && child.pid) {
+          try {
+            process.kill(-child.pid);
+          } catch {
+            child.kill();
+          }
+        } else {
+          child.kill();
+        }
         resolve({ ok: false, code: -1, stdout, stderr: stderr || 'SSH 命令超时' });
       }
     }, effectiveTimeout);
@@ -218,11 +238,19 @@ export function runRemote(
       resolve({ ok: false, code: -1, stdout, stderr: err.message });
     });
 
-    child.on('close', (code) => {
+    const finish = (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve({ ok: code === 0, code: code ?? -1, stdout, stderr: stderr.trim() });
+    };
+
+    child.on('close', (code) => finish(code));
+    // A backgrounded ControlPersist master may inherit and hold the stdio pipes open,
+    // delaying 'close' until it expires. Once ssh itself exited, all output is already
+    // in the pipe buffer, so settle shortly after 'exit' if 'close' hasn't arrived.
+    child.on('exit', (code) => {
+      setTimeout(() => finish(code), 300);
     });
 
     if (stdinData !== null && child.stdin) {
@@ -257,6 +285,7 @@ export function spawnEmbeddedSsh(
 }
 /**
  * Hand over the current terminal to an interactive `ssh` (or `ssh -t <cmd>`) session.
+ * Async (non-blocking) so background tasks like clipboard image sync keep running.
  */
 export function launchInteractiveSsh(profile, remoteCommand = '', { settings = {} } = {}) {
   const hasCmd = Boolean(String(remoteCommand || '').trim());
@@ -264,12 +293,25 @@ export function launchInteractiveSsh(profile, remoteCommand = '', { settings = {
   if (hasCmd) {
     args.push(remoteCommand);
   }
-  const res = spawnSync('ssh', args, {
-    stdio: 'inherit',
-    env: buildSshSpawnEnv(profile),
+  return new Promise((resolve) => {
+    // While ssh owns the TTY, a stray SIGINT (e.g. Ctrl+C during handshake) must not kill the TUI.
+    const ignoreSigint = () => {};
+    process.on('SIGINT', ignoreSigint);
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      process.off('SIGINT', ignoreSigint);
+      resolve(result);
+    };
+    let child;
+    try {
+      child = spawn('ssh', args, { stdio: 'inherit', env: buildSshSpawnEnv(profile) });
+    } catch (err) {
+      finish({ code: 1, error: err.message });
+      return;
+    }
+    child.on('error', (err) => finish({ code: 1, error: err.message }));
+    child.on('exit', (code, signal) => finish({ code: code ?? (signal ? 1 : 0), error: signal ? `signal ${signal}` : '' }));
   });
-  return {
-    code: res.status ?? (res.error ? 1 : 0),
-    error: res.error ? res.error.message : '',
-  };
 }

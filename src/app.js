@@ -626,49 +626,58 @@ export class ClaudeVpsApp {
     return items;
   }
 
-  launchClaudeInDir(dirPath, { mode = 'new', sessionId = '', fork = false } = {}) {
+  async launchClaudeInDir(dirPath, { mode = 'new', sessionId = '', fork = false } = {}) {
     if (!this.activeProfile) return;
+    if (this._interactiveRunning) return;
+    const profile = this.activeProfile;
     const settings = this.store.getSettings();
-    this.store.updateLastDir(this.activeProfile.id, dirPath);
+    this.store.updateLastDir(profile.id, dirPath);
     const clipSync = settings.enableImageClipboard
-      ? new ClipboardImageSync(this.activeProfile, settings)
+      ? new ClipboardImageSync(profile, settings)
       : null;
 
     const cmd = buildClaudeLaunchCommand(dirPath, {
-      claudeCommand: this.activeProfile.claudeCommand,
+      claudeCommand: profile.claudeCommand,
       mode,
       sessionId,
       fork,
       shell: settings.defaultShell,
-      preCommand: this.activeProfile.preCommand,
+      preCommand: profile.preCommand,
       clipboardToken: clipSync ? clipSync.token : '',
     });
 
-    const result = this.term.suspendForChild(() => {
-      process.stdout.write(`\x1b[2J\x1b[H`);
-      const label =
-        mode === 'resume'
-          ? `恢复会话 ${sessionId}`
-          : mode === 'continue'
-            ? '继续最近会话'
-            : '启动 Claude';
-      console.log(`[${this.activeProfile.name}] ${label} @ ${dirPath}`);
-      if (clipSync) {
-        console.log('[图片剪贴板同步已开启: 本机复制图片后自动写入 VPS 内存 /dev/shm]');
-      }
-      console.log('');
-      if (clipSync) clipSync.start();
-      try {
-        const r = launchInteractiveSsh(this.activeProfile, cmd, { settings });
-        if (r.code !== 0) {
-          console.log(`\nSSH 退出码: ${r.code}${r.error ? ` (${r.error})` : ''}`);
+    this._interactiveRunning = true;
+    let result;
+    try {
+      result = await this.term.suspendForChildAsync(async () => {
+        process.stdout.write(`\x1b[2J\x1b[H`);
+        const label =
+          mode === 'resume'
+            ? `恢复会话 ${sessionId}`
+            : mode === 'continue'
+              ? '继续最近会话'
+              : '启动 Claude';
+        console.log(`[${profile.name}] ${label} @ ${dirPath}`);
+        if (clipSync) {
+          console.log('[图片剪贴板同步已开启: 本机复制图片后自动写入 VPS 内存 /dev/shm]');
         }
-        return r;
-      } finally {
-        if (clipSync) clipSync.stop();
-      }
-    });
+        console.log('');
+        if (clipSync) clipSync.start();
+        try {
+          const r = await launchInteractiveSsh(profile, cmd, { settings });
+          if (r.code !== 0) {
+            console.log(`\nSSH 退出码: ${r.code}${r.error ? ` (${r.error})` : ''}`);
+          }
+          return r;
+        } finally {
+          if (clipSync) clipSync.stop();
+        }
+      });
+    } finally {
+      this._interactiveRunning = false;
+    }
 
+    this._needsClear = true;
     this.setStatus(
       result.code === 0 ? `Claude 已退出 (${dirPath})` : `SSH 退出码 ${result.code}`,
       result.code !== 0
@@ -2193,10 +2202,10 @@ export class ClaudeVpsApp {
         }
         return;
       case 'launchClaude':
-        this.launchClaudeInDir(this.currentDir.path, { mode: 'new' });
+        await this.launchClaudeInDir(this.currentDir.path, { mode: 'new' });
         return;
       case 'continueClaude':
-        this.launchClaudeInDir(this.currentDir.path, { mode: 'continue' });
+        await this.launchClaudeInDir(this.currentDir.path, { mode: 'continue' });
         return;
       case 'goUp':
         await this.goUpDir();
@@ -2720,9 +2729,9 @@ export class ClaudeVpsApp {
         { overrideDir: this.currentDir.path }
       );
     } else if (item.kind === 'launch') {
-      this.launchClaudeInDir(this.currentDir.path, { mode: 'new' });
+      await this.launchClaudeInDir(this.currentDir.path, { mode: 'new' });
     } else if (item.kind === 'continue') {
-      this.launchClaudeInDir(this.currentDir.path, { mode: 'continue' });
+      await this.launchClaudeInDir(this.currentDir.path, { mode: 'continue' });
     } else if (item.kind === 'sessions') {
       await this.dispatchAction('searchDirSessions');
     } else if (item.kind === 'up') {

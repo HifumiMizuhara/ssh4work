@@ -1,0 +1,10 @@
+# Normalize line endings: LF in the repo and on Linux/macOS checkouts
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.png binary
+*.jpg binary

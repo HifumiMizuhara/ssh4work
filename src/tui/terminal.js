@@ -182,6 +182,10 @@ export class TerminalController extends EventEmitter {
     this._onData = this._handleData.bind(this);
     this._onResize = () => this.emit('resize', this.getSize());
     this._onExit = () => this.leave();
+    this._onSignal = (sig) => {
+      this.leave();
+      process.exit(sig === 'SIGHUP' ? 129 : 143);
+    };
     this._dragState = null;
     this._mouseTracking = false;
   }
@@ -215,7 +219,8 @@ export class TerminalController extends EventEmitter {
     process.stdin.on('data', this._onData);
     process.stdout.on('resize', this._onResize);
     process.on('exit', this._onExit);
-    process.on('SIGTERM', this._onExit);
+    process.on('SIGTERM', this._onSignal);
+    if (process.platform !== 'win32') process.on('SIGHUP', this._onSignal);
 
     // Alt screen + hide cursor + bracketed paste + enable SGR mouse & hover/drag
     process.stdout.write('\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h');
@@ -228,7 +233,8 @@ export class TerminalController extends EventEmitter {
     process.stdin.off('data', this._onData);
     process.stdout.off('resize', this._onResize);
     process.off('exit', this._onExit);
-    process.off('SIGTERM', this._onExit);
+    process.off('SIGTERM', this._onSignal);
+    process.off('SIGHUP', this._onSignal);
 
     // Disable mouse tracking & bracketed paste + restore cursor + leave alt screen + reset SGR
     process.stdout.write('\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l\x1b[0m');
@@ -245,6 +251,18 @@ export class TerminalController extends EventEmitter {
     this.leave();
     try {
       return fn();
+    } finally {
+      this.enter();
+    }
+  }
+
+  /**
+   * Async variant of suspendForChild: keeps the Node event loop alive while the child owns the TTY.
+   */
+  async suspendForChildAsync(fn) {
+    this.leave();
+    try {
+      return await fn();
     } finally {
       this.enter();
     }

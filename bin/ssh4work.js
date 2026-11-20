@@ -30,49 +30,45 @@ if (args[0] === 'check-update') {
   const res = await checkForAppUpdate({ currentVersion: version });
   if (!res.ok) {
     console.error(`检查更新失败: ${res.error}`);
-    process.exit(1);
-  }
-  if (res.hasUpdate) {
+    process.exitCode = 1;
+  } else if (res.hasUpdate) {
     console.log(`发现新版本: v${res.latestVersion} (当前: v${res.currentVersion})`);
     console.log(`Release 地址: ${res.releaseUrl}`);
     console.log('运行 "ssh4work upgrade" 即可升级到最新版本。');
   } else {
     console.log(`当前已是最新版本: v${res.currentVersion}`);
   }
-  process.exit(0);
-}
-
-if (args[0] === 'upgrade' || args[0] === 'update') {
+} else if (args[0] === 'upgrade' || args[0] === 'update') {
   console.log(`当前版本: v${version}，正在检查更新...`);
   const check = await checkForAppUpdate({ currentVersion: version });
   if (check.ok && !check.hasUpdate) {
     console.log(`当前已是最新版本 (v${version})，无需升级。`);
-    process.exit(0);
-  }
-  if (check.ok && check.hasUpdate) {
-    console.log(`发现新版本 v${check.latestVersion}，正在执行升级...`);
   } else {
-    console.log('未能获取 Release 信息，尝试直接从主分支拉取更新...');
+    if (check.ok && check.hasUpdate) {
+      console.log(`发现新版本 v${check.latestVersion}，正在执行升级...`);
+    } else {
+      console.log('未能获取 Release 信息，尝试直接从主分支拉取更新...');
+    }
+    const up = performAppUpgrade();
+    if (!up.ok) {
+      console.error(`升级失败: ${up.error}`);
+      process.exitCode = 1;
+    } else {
+      console.log(`升级完成: v${up.previousVersion} -> v${up.newVersion} (${up.method})`);
+    }
   }
-  const up = performAppUpgrade();
-  if (!up.ok) {
-    console.error(`升级失败: ${up.error}`);
+} else {
+  let configPath;
+  const cfgIdx = args.indexOf('--config');
+  if (cfgIdx >= 0 && args[cfgIdx + 1]) {
+    configPath = args[cfgIdx + 1];
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error('请在交互式终端 (TTY) 中运行 ssh4work');
     process.exit(1);
   }
-  console.log(`升级完成: v${up.previousVersion} -> v${up.newVersion} (${up.method})`);
-  process.exit(0);
-}
 
-let configPath;
-const cfgIdx = args.indexOf('--config');
-if (cfgIdx >= 0 && args[cfgIdx + 1]) {
-  configPath = args[cfgIdx + 1];
+  const app = new ClaudeVpsApp({ configPath });
+  app.start();
 }
-
-if (!process.stdin.isTTY || !process.stdout.isTTY) {
-  console.error('请在交互式终端 (TTY) 中运行 ssh4work');
-  process.exit(1);
-}
-
-const app = new ClaudeVpsApp({ configPath });
-app.start();

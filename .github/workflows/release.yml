@@ -31,11 +31,7 @@ jobs:
             COMMITS="$(git log "${TAG}" -n 20 --pretty=format:'- %s (%h)' --no-merges)"
             RANGE_LINK=""
           fi
-          NOTES="### 更新内容
-
-${COMMITS}
-
-${RANGE_LINK}"
+          NOTES="$(printf '### 更新内容\n\n%s\n\n%s\n' "$COMMITS" "$RANGE_LINK")"
           gh release create "$TAG" \
             --title "ssh4work $TAG" \
             --notes "$NOTES"

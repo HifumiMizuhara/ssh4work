@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Private keys & credentials (NEVER COMMIT)
+keys/
+*.pem
+*.key
+*.ppk
+*.pub
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+
+# User profiles & local configurations (NEVER COMMIT)
+.claude-vps/
+profiles.json
+*.local.json
+.env
+.env.*
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.log

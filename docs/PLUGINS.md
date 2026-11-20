@@ -1,6 +1,6 @@
-# ssh2work 插件系统与开发指南
+# ssh4work 插件系统与开发指南
 
-`ssh2work` 采用**插件化架构**管理远程开发工具与 AI 编程助手。核心底座只负责 **纯 SSH 连接、多服务器标签页、远程目录浏览与内存级剪贴板直通**；各类 AI CLI（Claude Code、Codex、Antigravity、Pi、OpenCode）以及自定义远程运维/开发指令集均以插件形式按需启用，互不干扰。
+`ssh4work` 采用**插件化架构**管理远程开发工具与 AI 编程助手。核心底座只负责 **纯 SSH 连接、多服务器标签页、远程目录浏览与内存级剪贴板直通**；各类 AI CLI（Claude Code、Codex、Antigravity、Pi、OpenCode）以及自定义远程运维/开发指令集均以插件形式按需启用，互不干扰。
 
 ---
 
@@ -30,7 +30,7 @@
 | 选择插件 | `↑` / `↓` | 单击行 | 移动高亮光标 |
 | 安装 / 更新 / 启停 | `Enter` / `Space` | `[✓ 安装/启停]` / `[⬆ 更新]` | 未安装插件自动下载并启用；有新版本时执行更新；已安装插件切换启停状态 |
 | 同步远端插件源 | `f` | `[🔄 同步]` | 从插件仓库实时发现新插件并检测已安装插件的版本更新 |
-| 设置自定义插件源 | `r` | `[🌐 源设置]` | 配置 GitHub 仓库（如 `is-hp-is-mad/ssh2work-plugins`）或自定义 `registry.json` URL |
+| 设置自定义插件源 | `r` | `[🌐 源设置]` | 配置 GitHub 仓库（如 `is-hp-is-mad/ssh4work-plugins`）或自定义 `registry.json` URL |
 | 本地安装自定义插件 | `i` | `[📦 本地]` | 输入本地 `plugin.json` 文件路径或其所在目录路径 |
 | 服务器权限配置 | `s` / `c` | `[⚙ 权限]` | 打开该插件的逐服务器启用/禁用矩阵 |
 | 卸载插件 | `d` / `Delete` | `[✕ 卸载]` | 移除安装状态；自定义/远端插件还会从 `plugins.custom` 中移除 |
@@ -123,7 +123,7 @@
   "id": "docker-devops",
   "name": "Docker 远程运维",
   "version": "1.0.0",
-  "author": "ssh2work",
+  "author": "ssh4work",
   "description": "容器状态、实时资源监控与日志追踪快捷指令",
   "quickCommands": [
     {
@@ -155,7 +155,7 @@
   "id": "remote-dev-kit",
   "name": "远程开发工作流",
   "version": "1.0.0",
-  "author": "ssh2work",
+  "author": "ssh4work",
   "description": "Tmux 会话接入、Git 状态巡检与 btop/htop 系统监控",
   "quickCommands": [
     {
@@ -201,7 +201,7 @@
         "id": "docker-devops",
         "name": "Docker 远程运维",
         "version": "1.0.0",
-        "author": "ssh2work",
+        "author": "ssh4work",
         "description": "...",
         "tab": null,
         "quickCommands": [ ... ]

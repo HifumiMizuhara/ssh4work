@@ -94,7 +94,7 @@ export async function fetchRemotePluginRegistry(
     try {
       const resp = await fetchImpl(url, {
         signal: ctrl.signal,
-        headers: { 'User-Agent': 'ssh2work', Accept: 'application/json' },
+        headers: { 'User-Agent': 'ssh4work', Accept: 'application/json' },
       });
       if (!resp.ok) return { ok: false, status: resp.status, data: null };
       return { ok: true, status: resp.status, data: await resp.json() };

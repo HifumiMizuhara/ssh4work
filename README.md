@@ -1,4 +1,4 @@
-# ssh2work (`claude-vps`)
+# ssh4work
 
 > **零第三方依赖 · 100% 纯 SSH 零远端侵入 · 多服务器并发工作台 · 纯内存剪贴板图片直通粘贴 · 远程开发与 AI CLI 插件化管理 TUI**
 >
@@ -138,16 +138,17 @@ sequenceDiagram
 ## 项目目录结构
 
 ```text
-ssh2work/
+ssh4work/
 ├── bin/
-│   └── claude-vps.js          # CLI 可执行入口，解析 --config / --help 参数并启动 TUI
+│   └── ssh4work.js            # CLI 可执行入口，支持 TUI 启动、check-update 与 upgrade 升级
 ├── src/
 │   ├── app.js                 # 核心应用状态机、多标签会话调度、模态框交互与各视图渲染逻辑
 │   ├── ssh.js                 # OpenSSH 参数构建、环境检测、SSH_ASKPASS 动态脚本、sudo 提权包装与进程孵化
 │   ├── remote.js              # 远程目录操作及纯内存 stdin 注入的 Python 探针 (会话检索/预览/Token统计/MCP/Skills/Memory)
 │   ├── clipboard.js           # 纯 SSH 内存图片剪贴板同步引擎 (/dev/shm + xclip/wl-paste 内存垫片)、跨平台文本剪贴板与私钥扫描落盘
-│   ├── config.js              # 配置持久化管理 (~/.claude-vps/profiles.json) 与本机 ~/.ssh/config 解析器
-│   ├── plugins.js             # 插件管理器 (内置 5 大 AI CLI 插件 + 自定义 plugin.json 加载) 与 Token 计费/聚合分析引擎
+│   ├── config.js              # 配置持久化管理 (~/.ssh4work/profiles.json) 与本机 ~/.ssh/config 解析器
+│   ├── plugins.js             # 插件管理器 (内置/远端源实时发现与更新/本地安装) 与 Token 计费分析引擎
+│   ├── updater.js             # GitHub Release 版本检测与 CLI / 界面内一键升级模块
 │   ├── tui/
 │   │   ├── terminal.js        # 终端 Raw 模式控制器、ANSI SGR 鼠标/触控手势 (点击/拖拽/自然滑动) 与 Bracketed Paste 解析器
 │   │   ├── renderer.js        # ScreenBuffer 双缓冲按行 Diff 渲染器、HitBox 命中测试、可拖拽滚动条与屏幕文本提取
@@ -163,11 +164,11 @@ ssh2work/
 │   ├── platform.test.js       # Windows / Linux / macOS 跨平台适配单元测试
 │   ├── remote.test.js         # SSH 命令构建、内存剪贴板垫片生成与私钥权限规范化测试
 │   └── text.test.js           # 中英文混合宽度计算与截断测试
-├── claude-vps.ps1             # Windows PowerShell 快捷启动脚本
-├── claude-vps.sh              # Linux / macOS POSIX Shell 快捷启动脚本
+├── ssh4work.ps1               # Windows PowerShell 快捷启动脚本
+├── ssh4work.sh                # Linux / macOS POSIX Shell 快捷启动脚本
 ├── package.json               # 项目清单 (零第三方 dependencies，Node.js >= 20)
 ├── .gitattributes             # 跨平台换行符规范 (仓库内统一 LF，Windows .ps1/.cmd 保持 CRLF)
-├── .gitignore                 # 严格忽略本地私钥 (*.pem, *.key, keys/) 与个人配置 (.claude-vps/, profiles.json)
+├── .gitignore                 # 严格忽略本地私钥 (*.pem, *.key, keys/) 与个人配置 (.ssh4work/, profiles.json)
 ├── LICENSE                    # MIT 开源许可证
 └── README.md                  # 项目文档
 ```
@@ -186,11 +187,11 @@ ssh2work/
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/is-hp-is-mad/ssh2work.git
-cd ssh2work
+git clone https://github.com/is-hp-is-mad/ssh4work.git
+cd ssh4work
 
 # 2. 直接运行 (无需 npm install 安装任何第三方包！)
-node ./bin/claude-vps.js
+node ./bin/ssh4work.js
 # 或者使用 npm script
 npm start
 ```
@@ -199,12 +200,12 @@ npm start
 
 ```powershell
 # Windows PowerShell
-.\claude-vps.ps1
+.\ssh4work.ps1
 ```
 
 ```bash
 # Linux / macOS
-./claude-vps.sh
+./ssh4work.sh
 ```
 
 如果你希望在系统任意目录随时随地通过命令行启动，可执行全局链接：
@@ -212,16 +213,18 @@ npm start
 ```bash
 npm link
 
-# 之后在任意终端直接输入以下命令之一即可启动：
-ssh2work
-# 或
-claude-vps
+# 之后在任意终端直接输入：
+ssh4work
+
+# 检查或升级到最新 Release 版本：
+ssh4work check-update
+ssh4work upgrade
 ```
 
-支持通过 `--config` 参数或 `CLAUDE_VPS_CONFIG` 环境变量指定自定义配置文件路径：
+支持通过 `--config` 参数或 `SSH4WORK_CONFIG` 环境变量指定自定义配置文件路径：
 
 ```bash
-ssh2work --config /path/to/my-profiles.json
+ssh4work --config /path/to/my-profiles.json
 ```
 
 ### 运行测试
@@ -345,9 +348,9 @@ npm test
 ## 配置与私钥安全说明
 
 1. **个人配置文件默认存储在用户主目录外**：
-   - 默认情况下，所有的服务器列表、密码与偏好设置均保存在您本机用户主目录下的 `~/.claude-vps/profiles.json` 中，**不在代码仓库目录内**。
+   - 默认情况下，所有的服务器列表、密码与偏好设置均保存在您本机用户主目录下的 `~/.ssh4work/profiles.json`（兼容旧版 `~/.claude-vps/profiles.json`）中，**不在代码仓库目录内**。
 2. **仓库内置严格的 `.gitignore` 防护**：
-   - `.gitignore` 已默认屏蔽 `keys/`、`*.pem`、`*.key`、`*.ppk`、`id_rsa*`、`id_ed25519*`、`.claude-vps/`、`profiles.json`、`*.local.json` 与 `.env*`。
+   - `.gitignore` 已默认屏蔽 `keys/`、`*.pem`、`*.key`、`*.ppk`、`id_rsa*`、`id_ed25519*`、`.ssh4work/`、`.claude-vps/`、`profiles.json`、`*.local.json` 与 `.env*`。
    - 即使您将私钥文件存放在项目根目录或 `keys/` 文件夹下以便下拉选择，Git 也会自动忽略它们，防止误提交泄露。
    - **开源/提交前安全自检建议**：在执行 `git add` 与 `git commit` 前，建议始终运行 `git status` 确认暂存区中不包含任何私钥或个人配置。
 

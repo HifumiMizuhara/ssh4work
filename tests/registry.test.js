@@ -8,9 +8,9 @@ import { DEFAULT_PLUGIN_REGISTRY_URL } from '../src/config.js';
 import { compareSemver, fetchRemotePluginRegistry, normalizeRegistrySource } from '../src/plugins.js';
 
 test('normalizeRegistrySource and compareSemver handle GitHub, shorthand, and custom JSON URLs', () => {
-  const gh = normalizeRegistrySource('https://github.com/is-hp-is-mad/ssh2work-plugins');
+  const gh = normalizeRegistrySource('https://github.com/is-hp-is-mad/ssh4work-plugins');
   assert.equal(gh.kind, 'github');
-  assert.equal(gh.rawRegistryUrl, 'https://raw.githubusercontent.com/is-hp-is-mad/ssh2work-plugins/main/registry.json');
+  assert.equal(gh.rawRegistryUrl, 'https://raw.githubusercontent.com/is-hp-is-mad/ssh4work-plugins/main/registry.json');
 
   const short = normalizeRegistrySource('my-org/custom-plugins');
   assert.equal(short.kind, 'github');

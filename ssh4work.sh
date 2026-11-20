@@ -1,5 +1,5 @@
 #!/bin/sh
-# Linux / macOS launcher for ssh2work (claude-vps)
+# Linux / macOS launcher for ssh4work
 set -e
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
@@ -8,4 +8,4 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-exec node "$SCRIPT_DIR/bin/claude-vps.js" "$@"
+exec node "$SCRIPT_DIR/bin/ssh4work.js" "$@"

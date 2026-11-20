@@ -13,6 +13,7 @@ id_ecdsa*
 id_dsa*
 
 # User profiles & local configurations (NEVER COMMIT)
+.ssh4work/
 .claude-vps/
 profiles.json
 *.local.json

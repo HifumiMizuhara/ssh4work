@@ -1,6 +1,6 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$entry = Join-Path $scriptDir 'bin\claude-vps.js'
+$entry = Join-Path $scriptDir 'bin\ssh4work.js'
 
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {

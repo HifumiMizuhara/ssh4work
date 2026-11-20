@@ -3,13 +3,21 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const DEFAULT_PLUGIN_REGISTRY_URL = 'https://github.com/is-hp-is-mad/ssh2work-plugins';
+export const DEFAULT_PLUGIN_REGISTRY_URL = 'https://github.com/is-hp-is-mad/ssh4work-plugins';
 
 export function getDefaultConfigPath() {
+  if (process.env.SSH4WORK_CONFIG) {
+    return process.env.SSH4WORK_CONFIG;
+  }
   if (process.env.CLAUDE_VPS_CONFIG) {
     return process.env.CLAUDE_VPS_CONFIG;
   }
-  return path.join(os.homedir(), '.claude-vps', 'profiles.json');
+  const preferred = path.join(os.homedir(), '.ssh4work', 'profiles.json');
+  const legacy = path.join(os.homedir(), '.claude-vps', 'profiles.json');
+  if (!fs.existsSync(preferred) && fs.existsSync(legacy)) {
+    return legacy;
+  }
+  return preferred;
 }
 
 export function createDefaultSettings(input = {}) {

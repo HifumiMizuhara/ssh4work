@@ -47,6 +47,7 @@ import {
 import { ANSI, ScreenBuffer } from './tui/renderer.js';
 import { TerminalController } from './tui/terminal.js';
 import { VirtualTerminal } from './tui/vterm.js';
+import { checkForAppUpdate, getCurrentVersion, performAppUpgrade } from './updater.js';
 import { displayWidth, formatShortTime, padEndWidth, truncateToWidth } from './utils/text.js';
 
 function wrapTextToWidth(text, maxWidth) {
@@ -217,6 +218,7 @@ export class ClaudeVpsApp {
     this.sshEnv = checkSshEnvironment();
     this.remotePluginCache = [];
     this.remotePluginSource = '';
+    this.appUpdateInfo = null;
 
     this.tab = 'profiles'; // 'profiles' | 'files' | 'sessions'
     this.statusMsg = this.sshEnv.hasSsh ? this.sshEnv.agentMessage : this.sshEnv.agentMessage;
@@ -325,6 +327,46 @@ export class ClaudeVpsApp {
       });
     });
 
+    this.render();
+    this.checkAppUpdateInBackground().catch(() => {});
+  }
+
+  async checkAppUpdateInBackground({ fetchImpl } = {}) {
+    const info = await checkForAppUpdate({ fetchImpl });
+    if (!info.ok) return info;
+    this.appUpdateInfo = info;
+    if (info.hasUpdate && this._running) {
+      this.setStatus(`发现 ssh4work 新版本 v${info.latestVersion} (当前 v${info.currentVersion})，可点击顶部 [⬆更新] 升级`);
+      this.render();
+    }
+    return info;
+  }
+
+  async openAppUpdateModal({ force = false, fetchImpl } = {}) {
+    this.setStatus('正在检查 ssh4work 最新版本...');
+    this.render();
+    const info =
+      !force && this.appUpdateInfo?.ok
+        ? this.appUpdateInfo
+        : await checkForAppUpdate({ fetchImpl });
+    if (info.ok) this.appUpdateInfo = info;
+    this.modal = {
+      type: 'appUpdate',
+      title: '🔄 检查更新 (ssh4work)',
+      info,
+      scroll: 0,
+      upgrading: false,
+      upgradeDoneMsg: '',
+    };
+    if (info.ok) {
+      this.setStatus(
+        info.hasUpdate
+          ? `发现新版本 v${info.latestVersion} (当前 v${info.currentVersion})`
+          : `当前已是最新版本 v${info.currentVersion}`
+      );
+    } else {
+      this.setStatus(`检查更新失败: ${info.error}`, true);
+    }
     this.render();
   }
 
@@ -1874,6 +1916,35 @@ export class ClaudeVpsApp {
       case 'openPlugins':
         this.openPluginsModal();
         return;
+      case 'openAppUpdate':
+        await this.openAppUpdateModal({ force: false });
+        return;
+      case 'refreshAppUpdate':
+        await this.openAppUpdateModal({ force: true });
+        return;
+      case 'runAppUpgrade': {
+        this.setStatus('正在升级 ssh4work，请稍候...');
+        this.render();
+        const up = performAppUpgrade();
+        if (this.modal?.type === 'appUpdate') {
+          if (up.ok) {
+            this.modal.upgradeDoneMsg = `升级成功: v${up.previousVersion} -> v${up.newVersion} (${up.method})，请重启 ssh4work 以应用新版本。`;
+            this.modal.info = {
+              ...(this.modal.info || {}),
+              currentVersion: up.newVersion,
+              hasUpdate: false,
+            };
+            this.appUpdateInfo = this.modal.info;
+            this.setStatus(`升级成功: v${up.previousVersion} -> v${up.newVersion}，请重启 ssh4work`);
+          } else {
+            this.setStatus(`升级失败: ${up.error}`, true);
+          }
+        } else {
+          this.setStatus(up.ok ? `升级成功: v${up.newVersion}` : `升级失败: ${up.error}`, !up.ok);
+        }
+        this.render();
+        return;
+      }
       case 'pluginSelect':
         if (this.modal?.type === 'plugins') {
           this.modal.idx = payload;
@@ -3548,6 +3619,10 @@ export class ClaudeVpsApp {
       x = scr.drawButton(x, 1, `${4 + i}.${pt.label}`, 'switchTab', pt.id, { active: this.tab === pt.id });
     }
     x = scr.drawButton(x, 1, '🧩 插件', 'openPlugins');
+    const updateLabel = this.appUpdateInfo?.hasUpdate ? `⬆ v${this.appUpdateInfo.latestVersion}` : '🔄 更新';
+    x = scr.drawButton(x, 1, updateLabel, 'openAppUpdate', null, {
+      primary: Boolean(this.appUpdateInfo?.hasUpdate),
+    });
     x = scr.drawButton(x, 1, '🎨', 'cycleTheme');
     x = scr.drawButton(x, 1, '⚙ 设置', 'openSettings');
     const autoCopyOn = this.store.getSettings().enableAutoCopy !== false;
@@ -4451,6 +4526,45 @@ export class ClaudeVpsApp {
       let bx = inner.x;
       bx = scr.drawButton(bx, inner.y + inner.h - 1, '✓ 导入选中', 'modalSubmit', null, { primary: true });
       scr.drawButton(bx, inner.y + inner.h - 1, '✕ 取消', 'modalCancel');
+    } else if (m.type === 'appUpdate') {
+      const info = m.info || {};
+      const curVer = info.currentVersion || getCurrentVersion();
+      const latVer = info.latestVersion || curVer;
+      let y = inner.y;
+      scr.writeAt(inner.x, y++, `当前版本: v${curVer}`, ANSI.fg.brightWhite);
+      scr.writeAt(
+        inner.x,
+        y++,
+        info.ok
+          ? info.hasUpdate
+            ? `最新版本: v${latVer} (有可用更新！)`
+            : `最新版本: v${latVer} (已是最新)`
+          : `检查失败: ${info.error || '未知错误'}`,
+        info.ok ? (info.hasUpdate ? ANSI.fg.brightYellow : ANSI.fg.brightGreen) : ANSI.fg.red
+      );
+      if (info.releaseUrl) {
+        scr.writeAt(inner.x, y++, truncateToWidth(`Release: ${info.releaseUrl}`, inner.w), ANSI.fg.brightCyan);
+      }
+      if (m.upgradeDoneMsg) {
+        y++;
+        for (const wl of wrapTextToWidth(m.upgradeDoneMsg, inner.w)) {
+          if (y >= inner.y + inner.h - 2) break;
+          scr.writeAt(inner.x, y++, wl, ANSI.fg.brightGreen);
+        }
+      } else if (info.releaseNotes) {
+        y++;
+        scr.writeAt(inner.x, y++, '更新说明:', ANSI.fg.gray);
+        for (const nl of renderMarkdownLines(info.releaseNotes, inner.w, ANSI.fg.white)) {
+          if (y >= inner.y + inner.h - 2) break;
+          scr.writeAt(inner.x, y++, nl.text, nl.style);
+        }
+      }
+      let bx = inner.x;
+      if (info.hasUpdate) {
+        bx = scr.drawButton(bx, inner.y + inner.h - 1, '⬆ 立即升级', 'runAppUpgrade', null, { primary: true });
+      }
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, '🔄 重新检查', 'refreshAppUpdate');
+      scr.drawButton(bx, inner.y + inner.h - 1, '关闭 (Esc)', 'modalCancel');
     } else if (m.type === 'plugins') {
       const viewH = inner.h - 2;
       const targetSrv = this.activeProfile || this.store.list()[this.profileIdx] || null;

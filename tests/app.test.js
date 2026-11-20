@@ -628,3 +628,49 @@ test('per-server disabledPlugins skips disabled servers in Claude Code tab and q
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+
+test('long-press w on server tab charges progress bar and closes tab at threshold', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-charge-'));
+  try {
+    const app = new ClaudeVpsApp({ configPath: path.join(tmpDir, 'profiles.json') });
+    const s1 = app.store.upsert({ name: 'ChargeTest', host: '10.0.0.99', user: 'root' });
+    const tab = app.ensureServerTab(s1, { dirLoaded: true });
+    app.activeProfile = s1;
+    app.activeServerTabId = tab.id;
+    app.tab = 'files';
+
+    // Build a fake _lastScreen with the server tab button on row 2
+    const scr = new ScreenBuffer(100, 24);
+    scr.begin({ clear: false });
+    scr.drawButton(1, 1, '1.服务器', 'switchTab', 'profiles');
+    scr.drawButton(12, 1, '2.目录', 'switchTab', 'files');
+    // Server tab on row 2
+    scr.drawButton(1, 2, '● ChargeTest', 'switchServerTab', tab.id, { active: true });
+    app._lastScreen = scr;
+
+    // Switch to top focus zone
+    app.uiFocusZone = 'top';
+    // Find the switchServerTab button index
+    const topBtns = app.getZoneButtons(scr, 'top');
+    const tabBtnIdx = topBtns.findIndex((b) => b.action === 'switchServerTab');
+    assert.ok(tabBtnIdx >= 0, 'should find server tab button in top zone');
+    app.uiFocusBtnIdx = tabBtnIdx;
+
+    // Press 'w' less than threshold (6) — should NOT close
+    for (let i = 0; i < 4; i++) {
+      await app.handleKey({ type: 'key', name: 'w', char: 'w', ctrl: false });
+    }
+    assert.equal(app.serverTabs.length, 1, 'tab should still be open after 4 presses');
+    assert.equal(app.tabCloseCharge.count, 4, 'charge should be at 4');
+    assert.equal(app.tabCloseCharge.tabId, tab.id, 'charge should target the correct tab');
+
+    // Press 'w' 2 more times to reach threshold (6)
+    await app.handleKey({ type: 'key', name: 'w', char: 'w', ctrl: false });
+    await app.handleKey({ type: 'key', name: 'w', char: 'w', ctrl: false });
+    assert.equal(app.serverTabs.length, 0, 'tab should be closed after 6 presses');
+    assert.equal(app.tabCloseCharge.tabId, null, 'charge should be reset after close');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

@@ -235,6 +235,7 @@ export class ClaudeVpsApp {
     this.dockerScroll = 0;
     this.uiFocusZone = 'content'; // 'content' | 'top' | 'bottom'
     this.uiFocusBtnIdx = 0;
+    this.tabCloseCharge = { tabId: null, count: 0, lastTime: 0, timer: null }; // long-press w to close
 
     this.tab = 'profiles'; // 'profiles' | 'files' | 'sessions'
     this.statusMsg = this.sshEnv.hasSsh ? this.sshEnv.agentMessage : this.sshEnv.agentMessage;
@@ -3601,10 +3602,45 @@ export class ClaudeVpsApp {
     if (this.uiFocusZone !== 'content') {
       const btns = this.getZoneButtons(this._lastScreen, this.uiFocusZone);
       if (ev.name === 'escape') {
+        this._resetTabCloseCharge();
         this.uiFocusZone = 'content';
         this.render();
         return;
       }
+      // Long-press 'w' to close server tab (charge bar mechanic)
+      if (ev.char === 'w' && this.uiFocusZone === 'top') {
+        const focusedBtn = btns[Math.max(0, Math.min(btns.length - 1, this.uiFocusBtnIdx))];
+        const isServerTabBtn = focusedBtn && focusedBtn.action === 'switchServerTab';
+        if (isServerTabBtn) {
+          const tabId = focusedBtn.payload;
+          const now = Date.now();
+          const CHARGE_STEPS = 6;
+          const MAX_GAP_MS = 300; // reset if gap between presses exceeds this
+          if (this.tabCloseCharge.tabId === tabId && now - this.tabCloseCharge.lastTime < MAX_GAP_MS) {
+            this.tabCloseCharge.count++;
+          } else {
+            this.tabCloseCharge = { tabId, count: 1, lastTime: now, timer: null };
+          }
+          this.tabCloseCharge.lastTime = now;
+          // Reset charge after inactivity
+          clearTimeout(this.tabCloseCharge.timer);
+          this.tabCloseCharge.timer = setTimeout(() => {
+            if (this.tabCloseCharge.tabId === tabId) {
+              this.tabCloseCharge = { tabId: null, count: 0, lastTime: 0, timer: null };
+              this.render();
+            }
+          }, MAX_GAP_MS + 50);
+          if (this.tabCloseCharge.count >= CHARGE_STEPS) {
+            this._resetTabCloseCharge();
+            await this.closeServerTab(tabId);
+            return;
+          }
+          this.render();
+          return;
+        }
+      }
+      // Any other key resets the charge
+      if (ev.char !== 'w') this._resetTabCloseCharge();
       if (btns.length > 0) {
         if (ev.name === 'left' || ev.name === 'up') {
           this.uiFocusBtnIdx = (this.uiFocusBtnIdx - 1 + btns.length) % btns.length;
@@ -4039,6 +4075,11 @@ export class ClaudeVpsApp {
     }
   }
 
+  _resetTabCloseCharge() {
+    clearTimeout(this.tabCloseCharge.timer);
+    this.tabCloseCharge = { tabId: null, count: 0, lastTime: 0, timer: null };
+  }
+
   // ==================== Rendering ====================
 
   getZoneButtons(scr, zone) {
@@ -4233,6 +4274,8 @@ export class ClaudeVpsApp {
   renderServerTabs(scr, y, cols) {
     scr.drawLine(y, '');
     let x = 1;
+    const CHARGE_STEPS = 6;
+    const chargeChars = ['░', '▒', '▓', '█'];
     for (const t of this.serverTabs) {
       const isActive = t.id === this.activeServerTabId;
       const hasLiveTerm = Boolean(t.termSession && !t.termSession.exited);
@@ -4240,8 +4283,23 @@ export class ClaudeVpsApp {
       const tabTitle = t.termSession?.title || t.title;
       const fullName = tabTitle ? `${serverName}·${truncateToWidth(tabTitle, 8)}` : serverName;
       const prefix = isActive ? '● ' : hasLiveTerm ? '▸ ' : '';
-      const label = `${prefix}${fullName}`;
-      const nextX = scr.drawButton(x, y, label, 'switchServerTab', t.id, { active: isActive });
+      // Check if this tab is being charged for close
+      const isCharging = this.tabCloseCharge.tabId === t.id && this.tabCloseCharge.count > 0;
+      const chargeRatio = isCharging ? this.tabCloseCharge.count / CHARGE_STEPS : 0;
+      let label;
+      if (isCharging) {
+        // Build charge bar: replace tab text with progress visualization
+        const barLen = displayWidth(fullName) + (prefix ? displayWidth(prefix) : 0);
+        const filled = Math.round(chargeRatio * barLen);
+        const barFull = '█'.repeat(Math.min(filled, barLen));
+        const barEmpty = '░'.repeat(Math.max(0, barLen - filled));
+        label = `${barFull}${barEmpty}`;
+      } else {
+        label = `${prefix}${fullName}`;
+      }
+      const btnOpts = { active: isActive };
+      if (isCharging) btnOpts.danger = true;
+      const nextX = scr.drawButton(x, y, label, 'switchServerTab', t.id, btnOpts);
       if (nextX === x) break;
       x = nextX - 1;
       if (x + 3 <= cols) {

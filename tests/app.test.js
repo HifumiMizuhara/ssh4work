@@ -674,3 +674,141 @@ test('long-press w on server tab charges progress bar and closes tab at threshol
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('Shift+Tab cycles top -> sub -> bottom -> content in plugin tabs and shows close-tab hint on server tab', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-focus-zones-'));
+  try {
+    const app = new ClaudeVpsApp({ configPath: path.join(tmpDir, 'profiles.json') });
+    const s1 = app.store.upsert({ name: 'SrvA', host: '10.0.0.1', user: 'root' });
+    const tab = app.ensureServerTab(s1, { dirLoaded: true });
+    app.activeProfile = s1;
+    app.activeServerTabId = tab.id;
+    app.tab = 'sessions';
+    app.agentSubTab = 'sessions';
+    app.sessions = [
+      { sessionId: 'aaaa1111', title: 'First session', cwd: '/app', updatedAt: Date.now() },
+      { sessionId: 'bbbb2222', title: 'Second session', cwd: '/app', updatedAt: Date.now() - 1000 },
+    ];
+    app._running = true;
+    app.term.getSize = () => ({ cols: 110, rows: 26 });
+    const origWrite = process.stdout.write;
+    process.stdout.write = () => true;
+    try {
+      app.render();
+
+      // Verify 3 distinct button zones exist on Claude Code tab: top, sub, bottom
+      assert.ok(app.getZoneButtons(app._lastScreen, 'top').length > 0);
+      assert.ok(app.getZoneButtons(app._lastScreen, 'sub').length > 0);
+      assert.ok(app.getZoneButtons(app._lastScreen, 'bottom').length > 0);
+
+      // Cycle: content -> top -> sub -> bottom -> content
+      assert.equal(app.uiFocusZone, 'content');
+      await app.handleKey({ type: 'key', name: 'shift-tab', char: '', ctrl: false });
+      assert.equal(app.uiFocusZone, 'top');
+
+      // Move focus to the closeable server tab and verify status bar shows "长按 w 关闭标签"
+      const topBtns = app.getZoneButtons(app._lastScreen, 'top');
+      const tabBtnIdx = topBtns.findIndex((b) => b.action === 'switchServerTab');
+      assert.ok(tabBtnIdx >= 0);
+      app.uiFocusBtnIdx = tabBtnIdx;
+      app.render();
+      const statusRow = app._lastScreen.extractText(1, 26, 110, 26);
+      assert.ok(statusRow.includes('长按 w 关闭标签'), `expected close-tab hint in status bar, got: ${statusRow}`);
+
+      // Continue cycling: top -> sub -> bottom -> content
+      await app.handleKey({ type: 'key', name: 'shift-tab', char: '', ctrl: false });
+      assert.equal(app.uiFocusZone, 'sub');
+      await app.handleKey({ type: 'key', name: 'shift-tab', char: '', ctrl: false });
+      assert.equal(app.uiFocusZone, 'bottom');
+      await app.handleKey({ type: 'key', name: 'shift-tab', char: '', ctrl: false });
+      assert.equal(app.uiFocusZone, 'content');
+
+      // In content zone, down arrow navigates the plugin's session list
+      assert.equal(app.sessionIdx, 0);
+      await app.handleKey({ type: 'key', name: 'down', char: '', ctrl: false });
+      assert.equal(app.sessionIdx, 1);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('tokenStats modal supports full keyboard navigation (views, time presets, custom time, Esc return)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-token-kb-'));
+  try {
+    const app = new ClaudeVpsApp({ configPath: path.join(tmpDir, 'profiles.json') });
+    const rawRecords = [
+      {
+        ts: new Date().toISOString(),
+        respModel: 'claude-sonnet-4-5',
+        reqModel: 'claude-sonnet-4-5',
+        in: 1000,
+        out: 500,
+        cr: 200,
+        cc: 0,
+        title: 's1',
+      },
+      {
+        ts: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+        respModel: 'claude-opus-4-1',
+        reqModel: 'claude-opus-4-1',
+        in: 2000,
+        out: 800,
+        cr: 0,
+        cc: 0,
+        title: 's2',
+      },
+    ];
+    app.modal = {
+      type: 'tokenStats',
+      title: '📊 Claude Code Token 统计',
+      rawRecords,
+      startTime: '',
+      endTime: '',
+      preset: 'all',
+      stats: aggregateTokenStats(rawRecords),
+      view: 'model',
+      idx: 0,
+      scroll: 0,
+    };
+
+    // Left/Right switches views
+    await app.handleKey({ type: 'key', name: 'right', char: '', ctrl: false });
+    assert.equal(app.modal.view, 'route');
+    await app.handleKey({ type: 'key', name: 'left', char: '', ctrl: false });
+    assert.equal(app.modal.view, 'model');
+
+    // Down/Up/End/Home navigates table rows
+    await app.handleKey({ type: 'key', name: 'down', char: '', ctrl: false });
+    assert.equal(app.modal.idx, 1);
+    await app.handleKey({ type: 'key', name: 'home', char: '', ctrl: false });
+    assert.equal(app.modal.idx, 0);
+
+    // Tab cycles time presets: all -> today -> 7d -> 30d -> all
+    await app.handleKey({ type: 'key', name: 'tab', char: '', ctrl: false });
+    assert.equal(app.modal.preset, 'today');
+    assert.ok(app.modal.startTime.endsWith('00:00:00'));
+    await app.handleKey({ type: 'key', name: 'tab', char: '', ctrl: false });
+    assert.equal(app.modal.preset, '7d');
+
+    // Direct shortcut 'a' resets to all
+    await app.handleKey({ type: 'key', name: 'a', char: 'a', ctrl: false });
+    assert.equal(app.modal.preset, 'all');
+    assert.equal(app.modal.startTime, '');
+
+    // 't' opens custom time range editor; Esc returns to tokenStats modal
+    await app.handleKey({ type: 'key', name: 't', char: 't', ctrl: false });
+    assert.equal(app.modal.type, 'profileForm');
+    assert.equal(app.modal.isTimeRange, true);
+    await app.handleKey({ type: 'key', name: 'escape', char: '', ctrl: false });
+    assert.equal(app.modal.type, 'tokenStats');
+
+    // 'q' closes tokenStats modal
+    await app.handleKey({ type: 'key', name: 'q', char: 'q', ctrl: false });
+    assert.equal(app.modal, null);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

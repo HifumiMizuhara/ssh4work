@@ -1073,6 +1073,7 @@ export class ClaudeVpsApp {
       rawRecords: res.records,
       startTime,
       endTime,
+      preset: startTime || endTime ? 'custom' : 'all',
       stats,
       view: 'model', // 'model' | 'route' | 'hour' | 'day' | 'items'
       idx: 0,
@@ -2472,6 +2473,7 @@ export class ClaudeVpsApp {
         }
         targetStats.startTime = startStr;
         targetStats.endTime = finalEnd;
+        targetStats.preset = payload || 'all';
         targetStats.stats = aggregateTokenStats(targetStats.rawRecords, {
           startTime: startStr,
           endTime: finalEnd,
@@ -3361,6 +3363,7 @@ export class ClaudeVpsApp {
         const parent = m.parentTokenStats;
         parent.startTime = startVal;
         parent.endTime = endVal;
+        parent.preset = startVal || endVal ? 'custom' : 'all';
         parent.stats = aggregateTokenStats(parent.rawRecords, { startTime: startVal, endTime: endVal });
         parent.idx = 0;
         parent.scroll = 0;
@@ -3537,9 +3540,14 @@ export class ClaudeVpsApp {
 
     if (this.tab === 'terminal') {
       if (ev.ctrl && ev.name === 'q') return this.stop();
-      if (ev.alt && ev.name === '1') return this.dispatchAction('switchTab', 'profiles');
-      if (ev.alt && ev.name === '2') return this.dispatchAction('switchTab', 'files');
-      if (ev.alt && ev.name === '3') return this.dispatchAction('switchTab', 'sessions');
+      // Alt+number to switch tabs (including dynamic plugin tabs)
+      if (ev.alt && ev.name >= '1' && ev.name <= '9') {
+        const pluginTabs = this.plugins.getEnabledTabs();
+        const navTabs = ['profiles', 'files', 'terminal', ...pluginTabs.map((t) => t.id)];
+        const idx = Number(ev.name) - 1;
+        if (idx < navTabs.length) return this.dispatchAction('switchTab', navTabs[idx]);
+        return;
+      }
       if (ev.alt && (ev.name === '[' || ev.name === ']') && this.serverTabs.length > 1) {
         const curIdx = this.serverTabs.findIndex((t) => t.id === this.activeServerTabId);
         const baseIdx = curIdx >= 0 ? curIdx : 0;
@@ -3553,7 +3561,7 @@ export class ClaudeVpsApp {
         this.setStatus(
           this.terminalMouseMode
             ? '已开启终端鼠标/触控点击模式 (可点击顶部标签，Alt+M 切回原生选字)'
-            : '已切回原生选字模式 (可直接拖拽选中文字，Alt+1~3 切换面板)'
+            : '已切回原生选字模式 (可直接拖拽选中文字，Alt+数字 切换面板)'
         );
         this.render();
         return;
@@ -3586,10 +3594,18 @@ export class ClaudeVpsApp {
       return;
     }
     if (ev.name === 'shift-tab' || ev.name === 'f6' || ev.name === 'f10') {
-      const zones = ['content', 'top', 'bottom'];
-      const nextZone = zones[(zones.indexOf(this.uiFocusZone) + 1) % zones.length];
+      this._resetTabCloseCharge();
+      const candidateZones = ['content', 'top', 'sub', 'bottom'];
+      const zones = candidateZones.filter(
+        (z) => z === 'content' || this.getZoneButtons(this._lastScreen, z).length > 0
+      );
+      const curIdx = zones.indexOf(this.uiFocusZone);
+      const nextZone = zones[(curIdx >= 0 ? curIdx + 1 : 0) % zones.length];
       this.uiFocusZone = nextZone;
       this.uiFocusBtnIdx = 0;
+      if (nextZone === 'content') {
+        this.setStatus('焦点已切换到内容列表 (↑/↓ 选择 | ←/→ 切子标签 | Enter 确认 | Shift+Tab 切区域 | Esc 顶部栏)');
+      }
       this.render();
       return;
     }
@@ -3822,12 +3838,19 @@ export class ClaudeVpsApp {
       const len = this.getDockerListItems().length;
       if (ev.name === 'up' && len > 0) this.dockerIdx = Math.max(0, this.dockerIdx - 1);
       else if (ev.name === 'down' && len > 0) this.dockerIdx = Math.min(len - 1, this.dockerIdx + 1);
+      else if (ev.name === 'home' && len > 0) this.dockerIdx = 0;
+      else if (ev.name === 'end' && len > 0) this.dockerIdx = len - 1;
       else if (ev.name === 'pageup' && len > 0) this.dockerIdx = Math.max(0, this.dockerIdx - 8);
       else if (ev.name === 'pagedown' && len > 0) this.dockerIdx = Math.min(len - 1, this.dockerIdx + 8);
       else if (ev.name === 'enter') {
         if (this.dockerSubTab === 'containers') return this.dispatchAction('dockerExec');
         if (this.dockerSubTab === 'compose') return this.dispatchAction('dockerRestart');
       } else if (ev.char === '/') return this.dispatchAction('dockerSearch');
+      else if (ev.char === 'o' && this.dockerSubTab === 'containers') return this.dispatchAction('dockerToggleRunning');
+      else if (ev.char === 'S' && this.dockerSubTab === 'containers') return this.dispatchAction('dockerStats');
+      else if (ev.char === 'c' && this.dockerSubTab !== 'containers' && this.dockerSubTab !== 'compose') {
+        return this.dispatchAction('dockerPrune');
+      }
       else if (ev.char === 'l') return this.dispatchAction('dockerLogs');
       else if (ev.char === 'L') return this.dispatchAction('dockerLogsFollow');
       else if (ev.char === 'i') return this.dispatchAction('dockerInspect');
@@ -3868,12 +3891,15 @@ export class ClaudeVpsApp {
         const len = this.sessions.length;
         if (ev.name === 'up' && len > 0) this.sessionIdx = Math.max(0, this.sessionIdx - 1);
         else if (ev.name === 'down' && len > 0) this.sessionIdx = Math.min(len - 1, this.sessionIdx + 1);
+        else if (ev.name === 'home' && len > 0) this.sessionIdx = 0;
+        else if (ev.name === 'end' && len > 0) this.sessionIdx = len - 1;
         else if (ev.name === 'pageup' && len > 0) this.sessionIdx = Math.max(0, this.sessionIdx - 8);
         else if (ev.name === 'pagedown' && len > 0) this.sessionIdx = Math.min(len - 1, this.sessionIdx + 8);
         else if (ev.name === 'enter') return this.dispatchAction('resumeSession');
         else if (ev.char === 'f' && this.tab === 'sessions') return this.dispatchAction('forkSession');
         else if (ev.char === 'v' || ev.char === 'p') return this.dispatchAction('previewSession');
         else if (ev.char === 't' && this.tab === 'sessions') return this.dispatchAction('openTokenStats');
+        else if (ev.char === 'T' && this.tab === 'sessions') return this.dispatchAction('openSessionTokenStats');
         else if (ev.char === '/' || ev.char === 's') return this.dispatchAction('searchSessions');
         else if (ev.char === 'd' && this.tab === 'sessions') return this.dispatchAction('toggleSessionScope');
         else if (ev.char === 'r' || ev.char === 'R') return this.dispatchAction('refreshSessions');
@@ -3884,6 +3910,8 @@ export class ClaudeVpsApp {
         const maxS = Math.max(0, total - viewH);
         if (ev.name === 'up') this.agentSubScroll = Math.max(0, this.agentSubScroll - 1);
         else if (ev.name === 'down') this.agentSubScroll = Math.min(maxS, this.agentSubScroll + 1);
+        else if (ev.name === 'home') this.agentSubScroll = 0;
+        else if (ev.name === 'end') this.agentSubScroll = maxS;
         else if (ev.name === 'pageup') this.agentSubScroll = Math.max(0, this.agentSubScroll - 8);
         else if (ev.name === 'pagedown') this.agentSubScroll = Math.min(maxS, this.agentSubScroll + 8);
         else if (ev.char === 'r' || ev.char === 'R') return this.dispatchAction('refreshAgentSubTab');
@@ -3899,6 +3927,8 @@ export class ClaudeVpsApp {
               : this.agentMcpData?.items?.length || 0;
         if (ev.name === 'up' && len > 0) this.agentSubIdx = Math.max(0, this.agentSubIdx - 1);
         else if (ev.name === 'down' && len > 0) this.agentSubIdx = Math.min(len - 1, this.agentSubIdx + 1);
+        else if (ev.name === 'home' && len > 0) this.agentSubIdx = 0;
+        else if (ev.name === 'end' && len > 0) this.agentSubIdx = len - 1;
         else if (ev.name === 'pageup' && len > 0) this.agentSubIdx = Math.max(0, this.agentSubIdx - 8);
         else if (ev.name === 'pagedown' && len > 0) this.agentSubIdx = Math.min(len - 1, this.agentSubIdx + 8);
         else if (ev.name === 'enter') {
@@ -3924,6 +3954,11 @@ export class ClaudeVpsApp {
     if (ev.name === 'escape') {
       if (m.type === 'profileForm' && m.keyDropdownOpen) {
         m.keyDropdownOpen = false;
+        this.render();
+        return;
+      }
+      if (m.type === 'profileForm' && m.isTimeRange && m.parentTokenStats) {
+        this.modal = m.parentTokenStats;
         this.render();
         return;
       }
@@ -3987,43 +4022,76 @@ export class ClaudeVpsApp {
       return;
     }
     if (m.type === 'preview') {
+      const maxS = Math.max(0, m.lines.length - 6);
       if (ev.name === 'up') m.scroll = Math.max(0, m.scroll - 1);
-      else if (ev.name === 'down') m.scroll = Math.min(Math.max(0, m.lines.length - 6), m.scroll + 1);
+      else if (ev.name === 'down') m.scroll = Math.min(maxS, m.scroll + 1);
+      else if (ev.name === 'home') m.scroll = 0;
+      else if (ev.name === 'end') m.scroll = maxS;
       else if (ev.name === 'pageup') m.scroll = Math.max(0, m.scroll - 8);
-      else if (ev.name === 'pagedown') m.scroll = Math.min(Math.max(0, m.lines.length - 6), m.scroll + 8);
-      else if (ev.name === 'enter') return this.dispatchAction('previewResume');
+      else if (ev.name === 'pagedown') m.scroll = Math.min(maxS, m.scroll + 8);
+      else if (m.promptMeta && ev.char === 'e') return this.dispatchAction('editAgentPromptModal');
+      else if (m.promptMeta && ev.char === 't') return this.dispatchAction('editAgentPromptInTerminal');
+      else if (ev.name === 'enter' && !m.promptMeta && !m.title?.startsWith('🛠 Skill:')) {
+        return this.dispatchAction('previewResume');
+      }
+      else if (ev.char === 'q') {
+        this.modal = null;
+      }
       this.render();
       return;
     }
     if (m.type === 'sshImport') {
       if (ev.name === 'up') m.idx = Math.max(0, m.idx - 1);
       else if (ev.name === 'down') m.idx = Math.min(m.candidates.length - 1, m.idx + 1);
+      else if (ev.name === 'home' && m.candidates.length > 0) m.idx = 0;
+      else if (ev.name === 'end' && m.candidates.length > 0) m.idx = m.candidates.length - 1;
       else if (ev.name === 'enter') return this.submitModal();
       this.render();
       return;
     }
     if (m.type === 'agentSkills') {
+      const maxIdx = Math.max(0, m.skills.length - 1);
       if (ev.name === 'up') m.idx = Math.max(0, m.idx - 1);
-      else if (ev.name === 'down') m.idx = Math.min(Math.max(0, m.skills.length - 1), m.idx + 1);
+      else if (ev.name === 'down') m.idx = Math.min(maxIdx, m.idx + 1);
+      else if (ev.name === 'home') m.idx = 0;
+      else if (ev.name === 'end') m.idx = maxIdx;
+      else if (ev.name === 'pageup') m.idx = Math.max(0, m.idx - 8);
+      else if (ev.name === 'pagedown') m.idx = Math.min(maxIdx, m.idx + 8);
       else if (ev.name === 'enter') return this.dispatchAction('skillPreview');
       else if (ev.char === 'd' || ev.name === 'delete') return this.dispatchAction('skillDelete');
       else if (ev.char === 'i' || ev.char === 'n') return this.dispatchAction('skillInstall');
+      else if (ev.char === 'r' || ev.char === 'R') return this.dispatchAction('refreshAgentSkills');
+      else if (ev.char === 'q') this.modal = null;
       this.render();
       return;
     }
     if (m.type === 'claudeMemory') {
+      const maxIdx = Math.max(0, m.items.length - 1);
       if (ev.name === 'up') m.idx = Math.max(0, m.idx - 1);
-      else if (ev.name === 'down') m.idx = Math.min(Math.max(0, m.items.length - 1), m.idx + 1);
+      else if (ev.name === 'down') m.idx = Math.min(maxIdx, m.idx + 1);
+      else if (ev.name === 'home') m.idx = 0;
+      else if (ev.name === 'end') m.idx = maxIdx;
+      else if (ev.name === 'pageup') m.idx = Math.max(0, m.idx - 8);
+      else if (ev.name === 'pagedown') m.idx = Math.min(maxIdx, m.idx + 8);
       else if (ev.name === 'enter') return this.dispatchAction('memoryPreview');
       else if (ev.char === 'd' || ev.name === 'delete') return this.dispatchAction('memoryDelete');
+      else if (ev.char === 'r' || ev.char === 'R') return this.dispatchAction('refreshClaudeMemory');
+      else if (ev.char === 'q') this.modal = null;
       this.render();
       return;
     }
     if (m.type === 'agentMcp') {
+      const maxIdx = Math.max(0, m.items.length - 1);
       if (ev.name === 'up') m.idx = Math.max(0, m.idx - 1);
-      else if (ev.name === 'down') m.idx = Math.min(Math.max(0, m.items.length - 1), m.idx + 1);
-      else if (ev.name === 'enter' || ev.char === 'n') return this.dispatchAction('mcpAdd');
+      else if (ev.name === 'down') m.idx = Math.min(maxIdx, m.idx + 1);
+      else if (ev.name === 'home') m.idx = 0;
+      else if (ev.name === 'end') m.idx = maxIdx;
+      else if (ev.name === 'pageup') m.idx = Math.max(0, m.idx - 8);
+      else if (ev.name === 'pagedown') m.idx = Math.min(maxIdx, m.idx + 8);
+      else if (ev.name === 'enter' || ev.char === 'n' || ev.char === 'a') return this.dispatchAction('mcpAdd');
       else if (ev.char === 'd' || ev.name === 'delete') return this.dispatchAction('mcpDelete');
+      else if (ev.char === 'r' || ev.char === 'R') return this.dispatchAction('refreshAgentMcp');
+      else if (ev.char === 'q') this.modal = null;
       this.render();
       return;
     }
@@ -4031,7 +4099,14 @@ export class ClaudeVpsApp {
       const len = this.store.list().length;
       if (ev.name === 'up' && len > 0) m.idx = Math.max(0, m.idx - 1);
       else if (ev.name === 'down' && len > 0) m.idx = Math.min(len - 1, m.idx + 1);
+      else if (ev.name === 'home' && len > 0) m.idx = 0;
+      else if (ev.name === 'end' && len > 0) m.idx = len - 1;
+      else if (ev.name === 'pageup' && len > 0) m.idx = Math.max(0, m.idx - 8);
+      else if (ev.name === 'pagedown' && len > 0) m.idx = Math.min(len - 1, m.idx + 8);
       else if (ev.name === 'enter' || ev.name === 'space') return this.dispatchAction('pluginServerToggle');
+      else if (ev.char === 'a') return this.dispatchAction('pluginServersEnableAll');
+      else if (ev.char === 'x' || ev.char === 'd') return this.dispatchAction('pluginServersDisableAll');
+      else if (ev.name === 'backspace' || ev.char === 'b') return this.dispatchAction('openPlugins');
       this.render();
       return;
     }
@@ -4058,30 +4133,62 @@ export class ClaudeVpsApp {
       return;
     }
     if (m.type === 'plugins') {
+      const maxIdx = Math.max(0, m.catalog.length - 1);
       if (ev.name === 'up') m.idx = Math.max(0, m.idx - 1);
-      else if (ev.name === 'down') m.idx = Math.min(Math.max(0, m.catalog.length - 1), m.idx + 1);
+      else if (ev.name === 'down') m.idx = Math.min(maxIdx, m.idx + 1);
+      else if (ev.name === 'home') m.idx = 0;
+      else if (ev.name === 'end') m.idx = maxIdx;
+      else if (ev.name === 'pageup') m.idx = Math.max(0, m.idx - 8);
+      else if (ev.name === 'pagedown') m.idx = Math.min(maxIdx, m.idx + 8);
       else if (ev.name === 'enter' || ev.name === 'space') return this.dispatchAction('pluginToggleOrInstall');
       else if (ev.char === 's' || ev.char === 'c') return this.dispatchAction('openPluginServers');
       else if (ev.char === 'd' || ev.name === 'delete') return this.dispatchAction('pluginUninstall');
       else if (ev.char === 'i') return this.dispatchAction('pluginInstallLocal');
       else if (ev.char === 'f') return this.dispatchAction('pluginSyncRemote');
       else if (ev.char === 'r') return this.dispatchAction('pluginEditSource');
+      else if (ev.char === 'q') this.modal = null;
       this.render();
       return;
     }
     if (m.type === 'tokenStats') {
+      const views = ['model', 'route', 'hour', 'day', 'items'];
+      const presets = ['all', 'today', '7d', '30d'];
       const rows = this.getTokenStatsRows(m);
-      if (ev.name === '1') return this.dispatchAction('tokenStatsView', 'model');
-      if (ev.name === '2') return this.dispatchAction('tokenStatsView', 'route');
-      if (ev.name === '3') return this.dispatchAction('tokenStatsView', 'hour');
-      if (ev.name === '4') return this.dispatchAction('tokenStatsView', 'day');
-      if (ev.name === '5') return this.dispatchAction('tokenStatsView', 'items');
-      if (ev.char === 'r' || ev.char === 'R') return this.dispatchAction('refreshTokenStats');
+      if (ev.name === '1' || ev.char === '1') return this.dispatchAction('tokenStatsView', 'model');
+      if (ev.name === '2' || ev.char === '2') return this.dispatchAction('tokenStatsView', 'route');
+      if (ev.name === '3' || ev.char === '3') return this.dispatchAction('tokenStatsView', 'hour');
+      if (ev.name === '4' || ev.char === '4') return this.dispatchAction('tokenStatsView', 'day');
+      if (ev.name === '5' || ev.char === '5') return this.dispatchAction('tokenStatsView', 'items');
+      if (ev.name === 'left' || ev.name === 'right') {
+        const cur = Math.max(0, views.indexOf(m.view));
+        const next = views[(cur + (ev.name === 'right' ? 1 : -1) + views.length) % views.length];
+        return this.dispatchAction('tokenStatsView', next);
+      }
+      if (ev.name === 'tab' || ev.name === 'shift-tab') {
+        const cur = presets.indexOf(m.preset || 'all');
+        const step = ev.name === 'shift-tab' ? -1 : 1;
+        const next = presets[((cur >= 0 ? cur : 0) + step + presets.length) % presets.length];
+        return this.dispatchAction('tokenStatsPreset', next);
+      }
+      if (ev.char === 't') return this.dispatchAction('tokenStatsEditTime');
+      if (ev.char === 'd') return this.dispatchAction('tokenStatsPreset', 'today');
+      if (ev.char === 'w') return this.dispatchAction('tokenStatsPreset', '7d');
+      if (ev.char === 'm') return this.dispatchAction('tokenStatsPreset', '30d');
+      if (ev.char === 'a') return this.dispatchAction('tokenStatsPreset', 'all');
+      if (ev.char === 'r' || ev.char === 'R' || ev.name === 'f5') return this.dispatchAction('refreshTokenStats');
+      if (ev.char === 'q') {
+        this.modal = null;
+        this.render();
+        return;
+      }
       if (ev.name === 'up' && rows.length > 0) m.idx = Math.max(0, m.idx - 1);
       else if (ev.name === 'down' && rows.length > 0) m.idx = Math.min(rows.length - 1, m.idx + 1);
+      else if (ev.name === 'home' && rows.length > 0) m.idx = 0;
+      else if (ev.name === 'end' && rows.length > 0) m.idx = rows.length - 1;
       else if (ev.name === 'pageup' && rows.length > 0) m.idx = Math.max(0, m.idx - 8);
       else if (ev.name === 'pagedown' && rows.length > 0) m.idx = Math.min(rows.length - 1, m.idx + 8);
       this.render();
+      return;
     }
   }
 
@@ -4095,8 +4202,10 @@ export class ClaudeVpsApp {
   getZoneButtons(scr, zone) {
     if (!scr || !Array.isArray(scr.buttons)) return [];
     const topMaxY = this.serverTabs.length > 0 ? 2 : 1;
+    const bottomMinY = Math.max(topMaxY + 1, (scr.rows || 30) - 2);
     if (zone === 'top') return scr.buttons.filter((b) => b.y <= topMaxY);
-    if (zone === 'bottom') return scr.buttons.filter((b) => b.y > topMaxY);
+    if (zone === 'sub') return scr.buttons.filter((b) => b.y > topMaxY && b.y < bottomMinY);
+    if (zone === 'bottom') return scr.buttons.filter((b) => b.y >= bottomMinY);
     return [];
   }
 
@@ -4215,10 +4324,10 @@ export class ClaudeVpsApp {
         : scrollOff > 0
           ? `[${curTab?.profile?.name || 'SSH'}] 回看历史 (+${scrollOff} 行) - 滚轮向下或任意键返回底部`
           : curTab?.termSession?.exited
-            ? `[${curTab.profile?.name}] SSH 已退出 (${curTab.termSession.exitCode}) - 按 Enter 返回 | Alt+1~3 切换`
+            ? `[${curTab.profile?.name}] SSH 已退出 (${curTab.termSession.exitCode}) - 按 Enter 返回 | Alt+数字 切换`
             : this.terminalMouseMode
               ? `[${curTab?.profile?.name || 'SSH'}] 触控点击模式 - 点击顶部切换 | Alt+M 切回直接选字 | Ctrl+Q 退出`
-              : `[${curTab?.profile?.name || 'SSH'}] 原生选字(可直接拖拽) | Alt+1~3切面板 | Alt+[/]切服务器 | Alt+V贴图 | Alt+M触控`;
+              : `[${curTab?.profile?.name || 'SSH'}] 原生选字(可直接拖拽) | Alt+数字切面板 | Alt+[/]切服务器 | Alt+V贴图 | Alt+M触控`;
       scr.drawLine(rows, termStatus, this.statusIsError ? ANSI.fg.red : ANSI.fg.gray);
       if (this.modal) {
         this.renderModal(scr, cols, rows);
@@ -4262,8 +4371,21 @@ export class ClaudeVpsApp {
         this.uiFocusBtnIdx = Math.max(0, Math.min(zoneBtns.length - 1, this.uiFocusBtnIdx));
         const fb = zoneBtns[this.uiFocusBtnIdx];
         scr.writeAt(fb.x1, fb.y, fb.text, `\x1b[43m${ANSI.fg.black}${ANSI.bold}`);
-        const zoneLabel = this.uiFocusZone === 'top' ? '顶部栏焦点' : '操作栏焦点';
-        statusText = `[${zoneLabel}] 当前: [${fb.label}] | ←/→ 选按钮 | Enter 触发 | Shift+Tab 切换区域 | Esc 返回列表`;
+        const zoneLabel =
+          this.uiFocusZone === 'top'
+            ? '顶部栏焦点'
+            : this.uiFocusZone === 'sub'
+              ? '子菜单焦点'
+              : '操作栏焦点';
+        const isClosableTab = this.uiFocusZone === 'top' && fb.action === 'switchServerTab';
+        const isCharging = isClosableTab && this.tabCloseCharge.tabId === fb.payload && this.tabCloseCharge.count > 0;
+        if (isCharging) {
+          statusText = `[${zoneLabel}] 正在关闭 [${fb.label}] (${this.tabCloseCharge.count}/6) - 继续长按 w 确认关闭 | 松开取消`;
+        } else if (isClosableTab) {
+          statusText = `[${zoneLabel}] 当前: [${fb.label}] | 长按 w 关闭标签 | ←/→ 选按钮 | Enter 切换 | Shift+Tab 切换区域 | Esc 返回列表`;
+        } else {
+          statusText = `[${zoneLabel}] 当前: [${fb.label}] | ←/→ 选按钮 | Enter 触发 | Shift+Tab 切换区域 | Esc 返回列表`;
+        }
         statusStyle = `${ANSI.fg.brightYellow}${ANSI.bold}`;
       }
     }
@@ -4976,17 +5098,36 @@ export class ClaudeVpsApp {
         scr.drawButton(x, y, '✕ 删除', 'dockerRemove', null, { danger: true });
       }
     } else if (this.isAgentTab()) {
-      x = scr.drawButton(x, y, '▶ 恢复会话', 'resumeSession', null, { primary: true });
-      if (this.tab === 'sessions') {
-        x = scr.drawButton(x, y, '⑂ 分叉', 'forkSession');
+      if (this.agentSubTab === 'memory') {
+        x = scr.drawButton(x, y, '👁 预览/编辑', 'memoryPreview', null, { primary: true });
+        x = scr.drawButton(x, y, '✕ 删除', 'memoryDelete', null, { danger: true });
+        scr.drawButton(x, y, '↻ 刷新', 'refreshAgentSubTab');
+      } else if (this.agentSubTab === 'prompt') {
+        x = scr.drawButton(x, y, '✎ 写入/覆盖', 'editAgentPromptModal', null, { primary: true });
+        x = scr.drawButton(x, y, '💻 终端编辑', 'editAgentPromptInTerminal');
+        scr.drawButton(x, y, '↻ 刷新', 'refreshAgentSubTab');
+      } else if (this.agentSubTab === 'skills') {
+        x = scr.drawButton(x, y, '👁 预览', 'skillPreview', null, { primary: true });
+        x = scr.drawButton(x, y, '+ 安装 Skill', 'skillInstall');
+        x = scr.drawButton(x, y, '✕ 删除', 'skillDelete', null, { danger: true });
+        scr.drawButton(x, y, '↻ 刷新', 'refreshAgentSubTab');
+      } else if (this.agentSubTab === 'mcp') {
+        x = scr.drawButton(x, y, '+ 添加/编辑 MCP', 'mcpAdd', null, { primary: true });
+        x = scr.drawButton(x, y, '✕ 删除', 'mcpDelete', null, { danger: true });
+        scr.drawButton(x, y, '↻ 刷新', 'refreshAgentSubTab');
+      } else {
+        x = scr.drawButton(x, y, '▶ 恢复会话', 'resumeSession', null, { primary: true });
+        if (this.tab === 'sessions') {
+          x = scr.drawButton(x, y, '⑂ 分叉', 'forkSession');
+        }
+        x = scr.drawButton(x, y, '👁 预览', 'previewSession');
+        if (this.tab === 'sessions') {
+          x = scr.drawButton(x, y, '📊 Token统计', 'openTokenStats');
+          x = scr.drawButton(x, y, '📊 单条统计', 'openSessionTokenStats');
+        }
+        x = scr.drawButton(x, y, '🔍 搜索', 'searchSessions');
+        scr.drawButton(x, y, '↻ 刷新', 'refreshSessions');
       }
-      x = scr.drawButton(x, y, '👁 预览', 'previewSession');
-      if (this.tab === 'sessions') {
-        x = scr.drawButton(x, y, '📊 Token统计', 'openTokenStats');
-        x = scr.drawButton(x, y, '📊 单条统计', 'openSessionTokenStats');
-      }
-      x = scr.drawButton(x, y, '🔍 搜索', 'searchSessions');
-      scr.drawButton(x, y, '↻ 刷新', 'refreshSessions');
     }
   }
 
@@ -5451,11 +5592,11 @@ export class ClaudeVpsApp {
       vx = scr.drawButton(vx, inner.y, '3.按小时', 'tokenStatsView', 'hour', { active: m.view === 'hour' });
       vx = scr.drawButton(vx, inner.y, '4.按天', 'tokenStatsView', 'day', { active: m.view === 'day' });
       vx = scr.drawButton(vx, inner.y, '5.请求日志', 'tokenStatsView', 'items', { active: m.view === 'items' });
-      vx = scr.drawButton(vx, inner.y, '⏱时间', 'tokenStatsEditTime');
-      vx = scr.drawButton(vx, inner.y, '当天', 'tokenStatsPreset', 'today');
-      vx = scr.drawButton(vx, inner.y, '1周', 'tokenStatsPreset', '7d');
-      vx = scr.drawButton(vx, inner.y, '1月', 'tokenStatsPreset', '30d');
-      scr.drawButton(vx, inner.y, '全部', 'tokenStatsPreset', 'all');
+      vx = scr.drawButton(vx, inner.y, '⏱时间', 'tokenStatsEditTime', null, { active: m.preset === 'custom' });
+      vx = scr.drawButton(vx, inner.y, '当天', 'tokenStatsPreset', 'today', { active: m.preset === 'today' });
+      vx = scr.drawButton(vx, inner.y, '1周', 'tokenStatsPreset', '7d', { active: m.preset === '7d' });
+      vx = scr.drawButton(vx, inner.y, '1月', 'tokenStatsPreset', '30d', { active: m.preset === '30d' });
+      scr.drawButton(vx, inner.y, '全部', 'tokenStatsPreset', 'all', { active: !m.preset || m.preset === 'all' });
 
       // Prominent top KPI summary banner (CC Switch style)
       const kpiText = ` 💰 总成本: ${formatCostUsd(s.costUsd)}   │   📊 总请求: ${s.calls}   │   🔥 Tokens: ${formatTokenCount(s.totalTokens)}   │   ⚡ 缓存命中率: ${s.cacheRate.toFixed(1)}%`;
@@ -5528,8 +5669,12 @@ export class ClaudeVpsApp {
       }
 
       let bx = inner.x;
-      bx = scr.drawButton(bx, inner.y + inner.h - 1, '↻ 刷新统计', 'refreshTokenStats', null, { primary: true });
-      scr.drawButton(bx, inner.y + inner.h - 1, '关闭 (Esc)', 'modalCancel');
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, '↻ 刷新(r)', 'refreshTokenStats', null, { primary: true });
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, '关闭(Esc)', 'modalCancel');
+      const hint = ' ←/→切视图 | Tab切时间(d/w/m/a) | t自定义 | ↑/↓滚表';
+      if (bx + 4 < inner.x + inner.w) {
+        scr.writeAt(bx, inner.y + inner.h - 1, truncateToWidth(hint, inner.x + inner.w - bx), ANSI.fg.gray);
+      }
     }
     scr.clearClipMaxX();
   }

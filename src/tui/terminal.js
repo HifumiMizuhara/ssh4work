@@ -106,7 +106,7 @@ export function parseInputEvents(buf) {
           if (cp === 127 || cp === 8) name = 'backspace';
           else if (cp === 13) name = 'enter';
           else if (cp === 27) name = 'escape';
-          else if (cp === 9) name = 'tab';
+          else if (cp === 9) name = Number(csiU[2]) === 2 ? 'shift-tab' : 'tab';
         } else if (/^3;\d+~$/.test(seq)) {
           name = 'delete';
         }

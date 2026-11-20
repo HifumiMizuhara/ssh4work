@@ -1736,6 +1736,9 @@ export class ClaudeVpsApp {
         const list = this.getTokenStatsRows(this.modal);
         this.modal.idx = Math.max(0, Math.min(Math.max(0, list.length - 1), this.modal.idx + (delta > 0 ? 1 : -1)));
         this.render();
+      } else if (this.modal.type === 'appUpdate') {
+        this.modal.scroll = Math.max(0, (this.modal.scroll || 0) + delta);
+        this.render();
       } else if (
         this.modal.type === 'profileForm' &&
         this.modal.keyDropdownOpen &&
@@ -4035,6 +4038,13 @@ export class ClaudeVpsApp {
     if (m.type === 'appUpdate') {
       if (ev.char === 'r' || ev.name === 'f5') return this.dispatchAction('refreshAppUpdate');
       if (m.info?.hasUpdate && (ev.char === 'u' || ev.name === 'enter')) return this.dispatchAction('runAppUpgrade');
+      // Scroll release notes
+      if (ev.name === 'up') m.scroll = Math.max(0, (m.scroll || 0) - 1);
+      else if (ev.name === 'down') m.scroll = (m.scroll || 0) + 1;
+      else if (ev.name === 'pageup') m.scroll = Math.max(0, (m.scroll || 0) - 5);
+      else if (ev.name === 'pagedown') m.scroll = (m.scroll || 0) + 5;
+      else if (ev.name === 'home') m.scroll = 0;
+      else if (ev.name === 'end') m.scroll = 99999;
       this.render();
       return;
     }
@@ -5015,9 +5025,12 @@ export class ClaudeVpsApp {
             m.type === 'tokenStats' ||
             m.type === 'agentSkills' ||
             m.type === 'agentMcp' ||
-            m.type === 'claudeMemory'
+            m.type === 'claudeMemory' ||
+            m.type === 'actionPalette'
           ? Math.min(rows - 2, 20)
-          : 8;
+          : m.type === 'appUpdate'
+            ? Math.min(rows - 2, 14)
+            : 8;
     const x = Math.max(1, Math.floor((cols - w) / 2) + 1);
     const y = Math.max(1, Math.floor((rows - h) / 2) + 1);
 
@@ -5284,11 +5297,12 @@ export class ClaudeVpsApp {
       const info = m.info || {};
       const curVer = info.currentVersion || getCurrentVersion();
       const latVer = info.latestVersion || curVer;
-      let y = inner.y;
-      scr.writeAt(inner.x, y++, `当前版本: v${curVer}`, ANSI.fg.brightWhite);
+      // Fixed header rows
+      let headerY = inner.y;
+      scr.writeAt(inner.x, headerY++, `当前版本: v${curVer}`, ANSI.fg.brightWhite);
       scr.writeAt(
         inner.x,
-        y++,
+        headerY++,
         info.ok
           ? info.hasUpdate
             ? `最新版本: v${latVer} (有可用更新！)`
@@ -5297,25 +5311,48 @@ export class ClaudeVpsApp {
         info.ok ? (info.hasUpdate ? ANSI.fg.brightYellow : ANSI.fg.brightGreen) : ANSI.fg.red
       );
       if (info.releaseUrl) {
-        scr.writeAt(inner.x, y++, truncateToWidth(`Release: ${info.releaseUrl}`, inner.w), ANSI.fg.brightCyan);
+        scr.writeAt(inner.x, headerY++, truncateToWidth(`Release: ${info.releaseUrl}`, inner.w), ANSI.fg.brightCyan);
       }
+      // Scrollable content area (between header and button row)
+      const contentStartY = headerY;
+      const contentH = inner.y + inner.h - 1 - contentStartY; // -1 for button row
       if (m.loading) {
-        y++;
-        scr.writeAt(inner.x, y++, '⏳ 正在检查中...', ANSI.fg.brightYellow);
+        scr.writeAt(inner.x, contentStartY + 1, '⏳ 正在检查中...', ANSI.fg.brightYellow);
       } else if (m.upgradeDoneMsg) {
-        y++;
-        for (const wl of wrapTextToWidth(m.upgradeDoneMsg, inner.w)) {
-          if (y >= inner.y + inner.h - 2) break;
-          scr.writeAt(inner.x, y++, wl, ANSI.fg.brightGreen);
+        const wlines = wrapTextToWidth(m.upgradeDoneMsg, inner.w - 2);
+        for (let i = 0; i < Math.min(wlines.length, contentH); i++) {
+          scr.writeAt(inner.x, contentStartY + i, wlines[i], ANSI.fg.brightGreen);
         }
       } else if (info.releaseNotes && info.releaseNotes.trim()) {
-        y++;
-        scr.writeAt(inner.x, y++, '更新说明:', ANSI.fg.gray);
-        for (const nl of renderMarkdownLines(info.releaseNotes, inner.w, ANSI.fg.white)) {
-          if (y >= inner.y + inner.h - 2) break;
-          scr.writeAt(inner.x, y++, nl.text, nl.style);
+        // Build all rendered lines with markdown
+        const allLines = [
+          { text: '── 更新说明 ──', style: `${ANSI.fg.gray}${ANSI.bold}` },
+          ...renderMarkdownLines(info.releaseNotes, inner.w - 2, ANSI.fg.white),
+        ];
+        // Clamp scroll
+        const maxScroll = Math.max(0, allLines.length - contentH);
+        m.scroll = Math.max(0, Math.min(m.scroll || 0, maxScroll));
+        // Render visible slice
+        for (let i = 0; i < contentH; i++) {
+          const lineIdx = (m.scroll || 0) + i;
+          if (lineIdx >= allLines.length) break;
+          const ln = allLines[lineIdx];
+          scr.writeAt(inner.x, contentStartY + i, truncateToWidth(ln.text, inner.w - 1), ln.style);
+        }
+        // Draw scrollbar if content overflows
+        if (allLines.length > contentH) {
+          scr.drawScrollbar(
+            inner.x + inner.w,
+            contentStartY,
+            contentH,
+            m.scroll || 0,
+            allLines.length,
+            contentH,
+            'appUpdateScroll'
+          );
         }
       }
+      // Bottom buttons
       let bx = inner.x;
       if (info.hasUpdate) {
         bx = scr.drawButton(bx, inner.y + inner.h - 1, '⬆ 立即升级', 'runAppUpgrade', null, { primary: true });

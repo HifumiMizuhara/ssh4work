@@ -106,6 +106,68 @@ test('appUpdate modal handles keyboard: Esc closes, r refreshes, u upgrades when
   }
 });
 
+test('appUpdate modal shows loading state during refresh and empty notes are hidden', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-upd-'));
+  try {
+    const app = new ClaudeVpsApp({ configPath: path.join(tmpDir, 'profiles.json') });
+    let resolveDelay;
+    const delayedFetch = () =>
+      new Promise((r) => {
+        resolveDelay = r;
+      });
+    // Start opening but delay the fetch - modal should show loading
+    const openPromise = app.openAppUpdateModal({
+      force: true,
+      fetchImpl: async () => {
+        await delayedFetch();
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            tag_name: `v${getCurrentVersion()}`,
+            html_url: 'https://github.com/is-hp-is-mad/ssh4work/releases/latest',
+            body: '',
+          }),
+        };
+      },
+    });
+    // Modal should exist with loading=true before fetch completes
+    assert.equal(app.modal?.type, 'appUpdate');
+    assert.equal(app.modal.loading, true);
+    // Resolve the fetch
+    resolveDelay();
+    await openPromise;
+    // After fetch, loading should be false
+    assert.equal(app.modal.loading, false);
+    assert.equal(app.modal.info.ok, true);
+    // Empty release notes should not cause "更新说明:" to show
+    assert.equal(app.modal.info.releaseNotes, '');
+
+    await app.handleKey({ name: 'escape' });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Esc in content zone switches focus to top bar for pure-keyboard navigation', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-upd-'));
+  try {
+    const app = new ClaudeVpsApp({ configPath: path.join(tmpDir, 'profiles.json') });
+    assert.equal(app.uiFocusZone, 'content');
+
+    // Esc in content zone should switch to top bar
+    await app.handleKey({ name: 'escape' });
+    assert.equal(app.uiFocusZone, 'top');
+    assert.equal(app.uiFocusBtnIdx, 0);
+
+    // Esc in top bar should return to content
+    await app.handleKey({ name: 'escape' });
+    assert.equal(app.uiFocusZone, 'content');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('appUpdate modal buttons have correct hitboxes for mouse click', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-upd-'));
   try {

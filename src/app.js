@@ -359,6 +359,16 @@ export class ClaudeVpsApp {
   }
 
   async openAppUpdateModal({ force = false, fetchImpl } = {}) {
+    // Show loading state immediately so user gets feedback
+    this.modal = {
+      type: 'appUpdate',
+      title: '🔄 检查更新 (ssh4work)',
+      info: this.appUpdateInfo || { ok: false, currentVersion: getCurrentVersion(), latestVersion: '', hasUpdate: false },
+      scroll: 0,
+      upgrading: false,
+      upgradeDoneMsg: '',
+      loading: true,
+    };
     this.setStatus('正在检查 ssh4work 最新版本...');
     this.render();
     const info =
@@ -366,14 +376,11 @@ export class ClaudeVpsApp {
         ? this.appUpdateInfo
         : await checkForAppUpdate({ fetchImpl });
     if (info.ok) this.appUpdateInfo = info;
-    this.modal = {
-      type: 'appUpdate',
-      title: '🔄 检查更新 (ssh4work)',
-      info,
-      scroll: 0,
-      upgrading: false,
-      upgradeDoneMsg: '',
-    };
+    // Update modal with result (only if modal is still the appUpdate one)
+    if (this.modal?.type === 'appUpdate') {
+      this.modal.info = info;
+      this.modal.loading = false;
+    }
     if (info.ok) {
       this.setStatus(
         info.hasUpdate
@@ -3583,6 +3590,14 @@ export class ClaudeVpsApp {
       return;
     }
 
+    // Esc in content zone → switch focus to top bar (pure-keyboard navigation)
+    if (ev.name === 'escape' && this.uiFocusZone === 'content') {
+      this.uiFocusZone = 'top';
+      this.uiFocusBtnIdx = 0;
+      this.render();
+      return;
+    }
+
     if (this.uiFocusZone !== 'content') {
       const btns = this.getZoneButtons(this._lastScreen, this.uiFocusZone);
       if (ev.name === 'escape') {
@@ -5226,13 +5241,16 @@ export class ClaudeVpsApp {
       if (info.releaseUrl) {
         scr.writeAt(inner.x, y++, truncateToWidth(`Release: ${info.releaseUrl}`, inner.w), ANSI.fg.brightCyan);
       }
-      if (m.upgradeDoneMsg) {
+      if (m.loading) {
+        y++;
+        scr.writeAt(inner.x, y++, '⏳ 正在检查中...', ANSI.fg.brightYellow);
+      } else if (m.upgradeDoneMsg) {
         y++;
         for (const wl of wrapTextToWidth(m.upgradeDoneMsg, inner.w)) {
           if (y >= inner.y + inner.h - 2) break;
           scr.writeAt(inner.x, y++, wl, ANSI.fg.brightGreen);
         }
-      } else if (info.releaseNotes) {
+      } else if (info.releaseNotes && info.releaseNotes.trim()) {
         y++;
         scr.writeAt(inner.x, y++, '更新说明:', ANSI.fg.gray);
         for (const nl of renderMarkdownLines(info.releaseNotes, inner.w, ANSI.fg.white)) {

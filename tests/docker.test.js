@@ -22,11 +22,13 @@ test('ClaudeVpsApp renders Docker tab across containers, images, and compose sub
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-docker-'));
   try {
     const app = new ClaudeVpsApp({ configPath: path.join(tmpDir, 'profiles.json') });
+    app.activeProfile = app.store.upsert({ name: 'Prod-A', host: '203.0.113.10', user: 'ubuntu' });
     app.tab = 'docker';
     app.dockerData = {
-      loadedForProfileId: 'p1',
+      loadedForProfileId: app.activeProfile.id,
       containers: [
         { id: 'abc123456789', name: 'nginx-proxy', image: 'nginx:alpine', state: 'running', status: 'Up 2 hours', ports: '80->80/tcp' },
+        { id: 'bbb222333444', name: 'old-worker', image: 'python:3.12', state: 'exited', status: 'Exited (0)', ports: '' },
       ],
       images: [
         { id: 'def987654321', repository: 'nginx', tag: 'alpine', size: '42MB', createdSince: '2 days ago' },
@@ -34,14 +36,31 @@ test('ClaudeVpsApp renders Docker tab across containers, images, and compose sub
       compose: [
         { name: 'prod-stack', status: 'running(3)', configFiles: '/srv/prod/docker-compose.yml' },
       ],
+      networks: [
+        { id: 'net111222333', name: 'app-net', driver: 'bridge', scope: 'local' },
+      ],
+      volumes: [
+        { name: 'pg-data', driver: 'local', mountpoint: '/var/lib/docker/volumes/pg-data/_data' },
+      ],
     };
 
     const scr = new ScreenBuffer(100, 20);
     scr.begin({ clear: false });
     app.renderDocker(scr, 5, 10, 100);
-    const out1 = scr.extractText(1, 5, 100, 14);
+    const out1 = scr.extractText(1, 4, 100, 14);
+    assert.ok(out1.includes('Prod-A'));
     assert.ok(out1.includes('nginx-proxy'));
-    assert.ok(out1.includes('nginx:alpine'));
+    assert.ok(out1.includes('old-worker'));
+
+    await app.dispatchAction('dockerToggleRunning');
+    assert.equal(app.getDockerListItems().length, 1);
+    assert.equal(app.getDockerListItems()[0].name, 'nginx-proxy');
+    await app.dispatchAction('dockerToggleRunning');
+
+    app.dockerKeyword = 'worker';
+    assert.equal(app.getDockerListItems().length, 1);
+    assert.equal(app.getDockerListItems()[0].name, 'old-worker');
+    app.dockerKeyword = '';
 
     await app.dispatchAction('dockerSubTab', 'images');
     const scr2 = new ScreenBuffer(100, 20);
@@ -54,6 +73,18 @@ test('ClaudeVpsApp renders Docker tab across containers, images, and compose sub
     scr3.begin({ clear: false });
     app.renderDocker(scr3, 5, 10, 100);
     assert.ok(scr3.extractText(1, 5, 100, 14).includes('prod-stack'));
+
+    await app.dispatchAction('dockerSubTab', 'networks');
+    const scr4 = new ScreenBuffer(100, 20);
+    scr4.begin({ clear: false });
+    app.renderDocker(scr4, 5, 10, 100);
+    assert.ok(scr4.extractText(1, 5, 100, 14).includes('app-net'));
+
+    await app.dispatchAction('dockerSubTab', 'volumes');
+    const scr5 = new ScreenBuffer(100, 20);
+    scr5.begin({ clear: false });
+    app.renderDocker(scr5, 5, 10, 100);
+    assert.ok(scr5.extractText(1, 5, 100, 14).includes('pg-data'));
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

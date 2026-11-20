@@ -34,6 +34,10 @@ export async function fetchDockerOverview(profile, settings = {}, { elevate = fa
     'docker images --format "{{json .}}" 2>/dev/null || true',
     'echo "===COMPOSE==="',
     'docker compose ls --all --format json 2>/dev/null || echo "[]"',
+    'echo "===NETWORKS==="',
+    'docker network ls --format "{{json .}}" 2>/dev/null || true',
+    'echo "===VOLUMES==="',
+    'docker volume ls --format "{{json .}}" 2>/dev/null || true',
     'echo "===END==="',
   ].join('; ');
 
@@ -46,6 +50,8 @@ export async function fetchDockerOverview(profile, settings = {}, { elevate = fa
       containers: [],
       images: [],
       compose: [],
+      networks: [],
+      volumes: [],
       error: res.stderr || '获取 Docker 状态失败',
     };
   }
@@ -56,6 +62,8 @@ export async function fetchDockerOverview(profile, settings = {}, { elevate = fa
       containers: [],
       images: [],
       compose: [],
+      networks: [],
+      volumes: [],
       error: '当前服务器未安装 Docker CLI',
     };
   }
@@ -67,7 +75,9 @@ export async function fetchDockerOverview(profile, settings = {}, { elevate = fa
       containers: [],
       images: [],
       compose: [],
-      error: cRaw.split(/\r?\n/)[0] || 'Docker 权限不足（可尝试开启 [sudo 提权]）',
+      networks: [],
+      volumes: [],
+      error: cRaw.split(/\r?\n/)[0] || 'Docker 权限不足（可尝试开启 [🛡 提权]）',
     };
   }
 
@@ -91,7 +101,7 @@ export async function fetchDockerOverview(profile, settings = {}, { elevate = fa
     createdSince: String(img.CreatedSince || ''),
   }));
 
-  const compRaw = splitSection(res.stdout, '===COMPOSE===', '===END===');
+  const compRaw = splitSection(res.stdout, '===COMPOSE===', '===NETWORKS===');
   let compose = [];
   try {
     const parsed = JSON.parse(compRaw || '[]');
@@ -106,7 +116,22 @@ export async function fetchDockerOverview(profile, settings = {}, { elevate = fa
     compose = [];
   }
 
-  return { ok: true, containers, images, compose, error: '' };
+  const netRaw = splitSection(res.stdout, '===NETWORKS===', '===VOLUMES===');
+  const networks = parseJsonLines(netRaw).map((n) => ({
+    id: String(n.ID || '').slice(0, 12),
+    name: String(n.Name || ''),
+    driver: String(n.Driver || ''),
+    scope: String(n.Scope || ''),
+  }));
+
+  const volRaw = splitSection(res.stdout, '===VOLUMES===', '===END===');
+  const volumes = parseJsonLines(volRaw).map((v) => ({
+    name: String(v.Name || ''),
+    driver: String(v.Driver || ''),
+    mountpoint: String(v.Mountpoint || ''),
+  }));
+
+  return { ok: true, containers, images, compose, networks, volumes, error: '' };
 }
 
 /**
@@ -154,6 +179,12 @@ export async function runDockerAction(
       break;
     case 'composeRestart':
       rawCmd = `docker compose -p ${qTarget} restart`;
+      break;
+    case 'rmNetwork':
+      rawCmd = `docker network rm ${qTarget}`;
+      break;
+    case 'rmVolume':
+      rawCmd = `docker volume rm ${qTarget}`;
       break;
     default:
       return { ok: false, error: `未知 Docker 操作: ${action}` };

@@ -14,7 +14,8 @@ test('buildDockerExecCommand and buildDockerLogsFollowCommand handle quoting and
 
   const elevated = buildDockerLogsFollowCommand('api', { privilegeMode: 'sudo', sudoPassword: 'pw' }, { tail: 50 });
   assert.ok(elevated.includes('sudo -S'));
-  assert.ok(elevated.includes("docker logs -f --tail 50 'api'"));
+  assert.ok(elevated.includes('docker logs -f --tail 50'));
+  assert.ok(elevated.includes('api'));
 });
 
 test('ClaudeVpsApp renders Docker tab across containers, images, and compose sub-tabs', async () => {

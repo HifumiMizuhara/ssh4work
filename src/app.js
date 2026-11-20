@@ -13,6 +13,14 @@ import {
 } from './clipboard.js';
 import { ConfigStore, createProfile, DEFAULT_PLUGIN_REGISTRY_URL, readLocalSshConfig } from './config.js';
 import {
+  buildDockerExecCommand,
+  buildDockerLogsFollowCommand,
+  fetchDockerInspect,
+  fetchDockerLogs,
+  fetchDockerOverview,
+  runDockerAction,
+} from './docker.js';
+import {
   buildClaudeLaunchCommand,
   buildQuickLaunchCommand,
   createRemoteDir,
@@ -219,6 +227,10 @@ export class ClaudeVpsApp {
     this.remotePluginCache = [];
     this.remotePluginSource = '';
     this.appUpdateInfo = null;
+    this.dockerSubTab = 'containers'; // 'containers' | 'images' | 'compose'
+    this.dockerData = { containers: [], images: [], compose: [], loadedForProfileId: null };
+    this.dockerIdx = 0;
+    this.dockerScroll = 0;
 
     this.tab = 'profiles'; // 'profiles' | 'files' | 'sessions'
     this.statusMsg = this.sshEnv.hasSsh ? this.sshEnv.agentMessage : this.sshEnv.agentMessage;
@@ -732,6 +744,48 @@ export class ClaudeVpsApp {
 
   isAgentTab(tab = this.tab) {
     return ['sessions', 'codex', 'agy', 'pi', 'opencode'].includes(tab);
+  }
+
+  getDockerListItems() {
+    if (this.dockerSubTab === 'images') return this.dockerData.images || [];
+    if (this.dockerSubTab === 'compose') return this.dockerData.compose || [];
+    return this.dockerData.containers || [];
+  }
+
+  async loadDocker({ force = false } = {}) {
+    if (!this.activeProfile) {
+      this.setStatus('请先连接一个服务器', true);
+      this.render();
+      return;
+    }
+    if (!force && this.dockerData.loadedForProfileId === this.activeProfile.id) {
+      this.render();
+      return;
+    }
+    this.loadingText = `正在读取 ${this.activeProfile.name} 的 Docker 状态...`;
+    this.render();
+    const res = await fetchDockerOverview(this.activeProfile, this.store.getSettings(), {
+      elevate: this.isDirElevate(),
+    });
+    this.loadingText = '';
+    if (!res.ok) {
+      this.dockerData = { containers: [], images: [], compose: [], loadedForProfileId: null };
+      this.setStatus(res.error || '获取 Docker 状态失败', true);
+      this.render();
+      return;
+    }
+    this.dockerData = {
+      containers: res.containers,
+      images: res.images,
+      compose: res.compose,
+      loadedForProfileId: this.activeProfile.id,
+    };
+    const len = this.getDockerListItems().length;
+    this.dockerIdx = Math.max(0, Math.min(len - 1, this.dockerIdx));
+    this.setStatus(
+      `Docker: ${res.containers.length} 容器 / ${res.images.length} 镜像 / ${res.compose.length} Compose`
+    );
+    this.render();
   }
 
   getAgentTypeForTab(tab = this.tab) {
@@ -1703,6 +1757,9 @@ export class ClaudeVpsApp {
               : this.agentMcpData?.items?.length || 0;
         if (len > 0) this.agentSubIdx = Math.max(0, Math.min(len - 1, this.agentSubIdx + step));
       }
+    } else if (this.tab === 'docker') {
+      const len = this.getDockerListItems().length;
+      if (len > 0) this.dockerIdx = Math.max(0, Math.min(len - 1, this.dockerIdx + step));
     } else if (this.tab === 'terminal') {
       const curTab = this.getActiveTab();
       const vt = curTab?.termSession?.vterm;
@@ -1742,7 +1799,7 @@ export class ClaudeVpsApp {
           this.render();
           return;
         }
-        if (this.isAgentTab(payload)) {
+        if (this.isAgentTab(payload) || payload === 'docker') {
           const pluginId = this.plugins.getPluginIdForTab(payload);
           const eligible = this.store
             .list()
@@ -1798,6 +1855,8 @@ export class ClaudeVpsApp {
             this.agentSubTab = 'sessions';
           }
           await this.loadActiveAgentSubTab();
+        } else if (payload === 'docker') {
+          await this.loadDocker();
         } else {
           this.render();
         }
@@ -1912,6 +1971,188 @@ export class ClaudeVpsApp {
           );
           this.render();
         }
+        return;
+      case 'dockerSubTab':
+        this.dockerSubTab = payload;
+        this.dockerIdx = 0;
+        this.dockerScroll = 0;
+        this.render();
+        return;
+      case 'dockerRefresh':
+        await this.loadDocker({ force: true });
+        return;
+      case 'dockerSelect': {
+        this.dockerIdx = payload;
+        if (isDoubleTap && this.dockerSubTab === 'containers') {
+          await this.dispatchAction('dockerExec');
+        } else {
+          this.render();
+        }
+        return;
+      }
+      case 'dockerExec': {
+        const c = this.getDockerListItems()[this.dockerIdx];
+        if (!this.activeProfile || !c || this.dockerSubTab !== 'containers') return;
+        const cmd = buildDockerExecCommand(c.id, this.activeProfile, { elevate: this.isDirElevate() });
+        await this.runQuickCommandItem(this.activeProfile, { kind: 'custom', name: `🐚 ${c.name}`, command: cmd });
+        return;
+      }
+      case 'dockerLogs': {
+        const c = this.getDockerListItems()[this.dockerIdx];
+        if (!this.activeProfile || !c || this.dockerSubTab !== 'containers') return;
+        this.loadingText = `正在读取 ${c.name} 最近日志...`;
+        this.render();
+        const res = await fetchDockerLogs(this.activeProfile, c.id, {
+          tail: 200,
+          settings: this.store.getSettings(),
+          elevate: this.isDirElevate(),
+        });
+        this.loadingText = '';
+        if (!res.ok) {
+          this.setStatus(res.error || '读取日志失败', true);
+          this.render();
+          return;
+        }
+        const lines = [];
+        for (const rawLine of (res.text || '(暂无日志输出)').split(/\r?\n/)) {
+          for (const wl of wrapTextToWidth(rawLine, Math.max(40, this.term.getSize().cols - 10))) {
+            lines.push({ text: wl, style: /error|exception|fatal|fail/i.test(wl) ? ANSI.fg.red : ANSI.fg.white });
+          }
+        }
+        this.modal = { type: 'preview', title: `📜 容器日志: ${c.name} (最近 200 行)`, lines, scroll: Math.max(0, lines.length - 12) };
+        this.render();
+        return;
+      }
+      case 'dockerLogsFollow': {
+        const c = this.getDockerListItems()[this.dockerIdx];
+        if (!this.activeProfile || !c || this.dockerSubTab !== 'containers') return;
+        const cmd = buildDockerLogsFollowCommand(c.id, this.activeProfile, { elevate: this.isDirElevate(), tail: 100 });
+        await this.runQuickCommandItem(this.activeProfile, { kind: 'custom', name: `📡 ${c.name}`, command: cmd });
+        return;
+      }
+      case 'dockerInspect': {
+        const c = this.getDockerListItems()[this.dockerIdx];
+        if (!this.activeProfile || !c || this.dockerSubTab !== 'containers') return;
+        this.loadingText = `正在读取 ${c.name} 详情...`;
+        this.render();
+        const res = await fetchDockerInspect(this.activeProfile, c.id, {
+          settings: this.store.getSettings(),
+          elevate: this.isDirElevate(),
+        });
+        this.loadingText = '';
+        if (!res.ok) {
+          this.setStatus(res.error || '读取容器详情失败', true);
+          this.render();
+          return;
+        }
+        const lines = renderMarkdownLines(res.text, Math.max(40, this.term.getSize().cols - 10), ANSI.fg.white);
+        this.modal = { type: 'preview', title: `🔍 容器详情: ${c.name}`, lines, scroll: 0 };
+        this.render();
+        return;
+      }
+      case 'dockerStart':
+      case 'dockerStop':
+      case 'dockerRestart': {
+        const item = this.getDockerListItems()[this.dockerIdx];
+        if (!this.activeProfile || !item) return;
+        const opMap = {
+          dockerStart: this.dockerSubTab === 'compose' ? 'composeUp' : 'start',
+          dockerStop: this.dockerSubTab === 'compose' ? 'composeDown' : 'stop',
+          dockerRestart: this.dockerSubTab === 'compose' ? 'composeRestart' : 'restart',
+        };
+        const target = this.dockerSubTab === 'compose' ? item.name : item.id;
+        this.loadingText = `正在执行 Docker ${opMap[action]} (${item.name || target})...`;
+        this.render();
+        const res = await runDockerAction(this.activeProfile, opMap[action], target, this.store.getSettings(), {
+          elevate: this.isDirElevate(),
+        });
+        this.loadingText = '';
+        if (!res.ok) {
+          this.setStatus(res.error || '操作失败', true);
+          this.render();
+          return;
+        }
+        this.setStatus(`已完成: ${opMap[action]} ${item.name || target}`);
+        await this.loadDocker({ force: true });
+        return;
+      }
+      case 'dockerRemove': {
+        const item = this.getDockerListItems()[this.dockerIdx];
+        if (!this.activeProfile || !item) return;
+        if (this.dockerSubTab === 'containers') {
+          const isRunning = item.state === 'running';
+          this.openConfirmModal({
+            title: isRunning ? '强制删除运行中容器' : '删除容器',
+            message: `确定删除容器 "${item.name}" (${item.id})？`,
+            onConfirm: async () => {
+              const res = await runDockerAction(
+                this.activeProfile,
+                isRunning ? 'rmForce' : 'rm',
+                item.id,
+                this.store.getSettings(),
+                { elevate: this.isDirElevate() }
+              );
+              this.setStatus(res.ok ? `已删除容器 ${item.name}` : res.error, !res.ok);
+              await this.loadDocker({ force: true });
+            },
+          });
+        } else if (this.dockerSubTab === 'images') {
+          const ref = item.repository !== '<none>' ? `${item.repository}:${item.tag}` : item.id;
+          this.openConfirmModal({
+            title: '删除镜像',
+            message: `确定删除镜像 "${ref}" (${item.id})？`,
+            onConfirm: async () => {
+              const res = await runDockerAction(this.activeProfile, 'rmi', item.id, this.store.getSettings(), {
+                elevate: this.isDirElevate(),
+              });
+              this.setStatus(res.ok ? `已删除镜像 ${ref}` : res.error, !res.ok);
+              await this.loadDocker({ force: true });
+            },
+          });
+        }
+        return;
+      }
+      case 'dockerPull':
+        if (!this.activeProfile) return;
+        this.openInputModal({
+          title: '拉取 Docker 镜像',
+          prompt: '镜像名称 (如 nginx:alpine):',
+          initialValue: '',
+          onSubmit: async (img) => {
+            const name = String(img || '').trim();
+            if (!name) return;
+            this.loadingText = `正在拉取镜像 ${name} ...`;
+            this.render();
+            const res = await runDockerAction(this.activeProfile, 'pull', name, this.store.getSettings(), {
+              elevate: this.isDirElevate(),
+            });
+            this.loadingText = '';
+            this.setStatus(res.ok ? `已拉取镜像: ${name}` : res.error, !res.ok);
+            await this.loadDocker({ force: true });
+          },
+        });
+        return;
+      case 'dockerPrune':
+        if (!this.activeProfile) return;
+        this.openConfirmModal({
+          title: '清理悬空 Docker 资源',
+          message: '将执行 docker system prune -f（清理已停止容器、无用网络与悬空镜像）',
+          onConfirm: async () => {
+            const res = await runDockerAction(this.activeProfile, 'pruneSystem', '', this.store.getSettings(), {
+              elevate: this.isDirElevate(),
+            });
+            this.setStatus(res.ok ? '已完成 Docker 资源清理' : res.error, !res.ok);
+            await this.loadDocker({ force: true });
+          },
+        });
+        return;
+      case 'dockerStats':
+        if (!this.activeProfile) return;
+        await this.runQuickCommandItem(this.activeProfile, {
+          kind: 'custom',
+          name: '📊 Docker Stats',
+          command: this.isDirElevate() ? 'sudo docker stats' : 'docker stats',
+        });
         return;
       case 'openPlugins':
         this.openPluginsModal();
@@ -3361,6 +3602,35 @@ export class ClaudeVpsApp {
       return;
     }
 
+    if (this.tab === 'docker') {
+      const subTabs = ['containers', 'images', 'compose'];
+      if (ev.name === 'left' || ev.name === 'right') {
+        const curIdx = Math.max(0, subTabs.indexOf(this.dockerSubTab));
+        const nextIdx = (curIdx + (ev.name === 'right' ? 1 : -1) + subTabs.length) % subTabs.length;
+        return this.dispatchAction('dockerSubTab', subTabs[nextIdx]);
+      }
+      const len = this.getDockerListItems().length;
+      if (ev.name === 'up' && len > 0) this.dockerIdx = Math.max(0, this.dockerIdx - 1);
+      else if (ev.name === 'down' && len > 0) this.dockerIdx = Math.min(len - 1, this.dockerIdx + 1);
+      else if (ev.name === 'pageup' && len > 0) this.dockerIdx = Math.max(0, this.dockerIdx - 8);
+      else if (ev.name === 'pagedown' && len > 0) this.dockerIdx = Math.min(len - 1, this.dockerIdx + 8);
+      else if (ev.name === 'enter') {
+        if (this.dockerSubTab === 'containers') return this.dispatchAction('dockerExec');
+        if (this.dockerSubTab === 'compose') return this.dispatchAction('dockerRestart');
+      } else if (ev.char === 'l') return this.dispatchAction('dockerLogs');
+      else if (ev.char === 'L') return this.dispatchAction('dockerLogsFollow');
+      else if (ev.char === 'i') return this.dispatchAction('dockerInspect');
+      else if (ev.char === 's') return this.dispatchAction('dockerStart');
+      else if (ev.char === 'x') return this.dispatchAction('dockerStop');
+      else if (ev.char === 'r') return this.dispatchAction('dockerRestart');
+      else if (ev.char === 'd' || ev.name === 'delete') return this.dispatchAction('dockerRemove');
+      else if (ev.char === 'p') return this.dispatchAction('dockerPull');
+      else if (ev.char === 'f' || ev.char === 'R') return this.dispatchAction('dockerRefresh');
+      else if (ev.name === 'escape' || ev.char === 'q') return this.dispatchAction('switchTab', 'files');
+      this.render();
+      return;
+    }
+
     if (this.isAgentTab()) {
       const agentType = this.getAgentTypeForTab();
       const subTabs = agentType === 'claude'
@@ -3697,6 +3967,8 @@ export class ClaudeVpsApp {
       this.renderProfiles(scr, bodyStart, listHeight, cols);
     } else if (this.tab === 'files') {
       this.renderFiles(scr, bodyStart, listHeight, cols);
+    } else if (this.tab === 'docker') {
+      this.renderDocker(scr, bodyStart, listHeight, cols);
     } else if (this.isAgentTab()) {
       this.renderSessions(scr, bodyStart, listHeight, cols);
     }
@@ -3935,6 +4207,80 @@ export class ClaudeVpsApp {
         target: 'files',
         hovered: this._sbHover === 'files' || this._sbDrag?.target === 'files',
       });
+    }
+  }
+
+  renderDocker(scr, startRow, height, cols) {
+    const accent = this.getThemeAccent();
+    let sx = 1;
+    sx = scr.drawButton(sx, startRow, `🐳 容器 (${this.dockerData.containers.length})`, 'dockerSubTab', 'containers', {
+      active: this.dockerSubTab === 'containers',
+    });
+    sx = scr.drawButton(sx, startRow, `📦 镜像 (${this.dockerData.images.length})`, 'dockerSubTab', 'images', {
+      active: this.dockerSubTab === 'images',
+    });
+    sx = scr.drawButton(sx, startRow, `🧩 Compose (${this.dockerData.compose.length})`, 'dockerSubTab', 'compose', {
+      active: this.dockerSubTab === 'compose',
+    });
+    sx = scr.drawButton(sx, startRow, '📊 实时Stats', 'dockerStats');
+    scr.drawButton(sx, startRow, '↻ 刷新', 'dockerRefresh');
+
+    const listStartY = startRow + 1;
+    const listHeight = Math.max(2, height - 1);
+    const items = this.getDockerListItems();
+
+    if (this.loadingText) {
+      scr.writeAt(2, listStartY, truncateToWidth(this.loadingText, cols - 4), `${ANSI.fg.brightYellow}${ANSI.bold}`);
+      return;
+    }
+
+    if (items.length === 0) {
+      const emptyMsg =
+        this.dockerSubTab === 'containers'
+          ? '当前服务器暂无 Docker 容器。'
+          : this.dockerSubTab === 'images'
+            ? '当前服务器暂无本地 Docker 镜像。'
+            : '当前服务器未发现运行中的 Docker Compose 项目。';
+      scr.writeAt(2, listStartY + 1, emptyMsg, ANSI.fg.gray);
+      return;
+    }
+
+    const rowsPerItem = 2;
+    const visibleItems = Math.max(1, Math.floor(listHeight / rowsPerItem));
+    this.dockerIdx = Math.max(0, Math.min(items.length - 1, this.dockerIdx));
+    this.dockerScroll = this.computeScroll(this.dockerIdx, this.dockerScroll, visibleItems, items.length);
+    const itemW = cols;
+
+    for (let i = 0; i < visibleItems; i++) {
+      const idx = this.dockerScroll + i;
+      if (idx >= items.length) break;
+      const item = items[idx];
+      const selected = idx === this.dockerIdx;
+      const rowY = listStartY + i * rowsPerItem;
+      let line1 = '';
+      let line2 = '';
+      let style1 = selected ? `${ANSI.bg.cyan}${ANSI.fg.black}${ANSI.bold}` : ANSI.fg.brightWhite;
+
+      if (this.dockerSubTab === 'containers') {
+        const running = item.state === 'running';
+        const icon = running ? '●' : '○';
+        line1 = `${selected ? ' > ' : '   '}${icon} ${item.name}  (${item.id})`;
+        line2 = `     镜像: ${item.image} | 状态: ${item.status}${item.ports ? ` | 端口: ${item.ports}` : ''}`;
+        if (!selected) style1 = running ? ANSI.fg.brightGreen : ANSI.fg.gray;
+      } else if (this.dockerSubTab === 'images') {
+        line1 = `${selected ? ' > ' : '   '}📦 ${item.repository}:${item.tag}  (${item.id})`;
+        line2 = `     大小: ${item.size} | 创建: ${item.createdSince}`;
+        if (!selected) style1 = accent.title;
+      } else {
+        line1 = `${selected ? ' > ' : '   '}🧩 ${item.name}  [${item.status}]`;
+        line2 = `     配置: ${item.configFiles || '-'}`;
+        if (!selected) style1 = ANSI.fg.brightCyan;
+      }
+
+      const style2 = selected ? `${ANSI.bg.cyan}${ANSI.fg.black}` : ANSI.fg.gray;
+      scr.writeAt(1, rowY, padEndWidth(truncateToWidth(line1, itemW), itemW), style1);
+      scr.writeAt(1, rowY + 1, padEndWidth(truncateToWidth(line2, itemW), itemW), style2);
+      scr.addHitBox(1, rowY, itemW, rowY + 1, 'dockerSelect', idx);
     }
   }
 
@@ -4232,6 +4578,25 @@ export class ClaudeVpsApp {
         active: this.isDirElevate(),
       });
       scr.drawButton(x, y, '+ 指令', 'addQuickCmdInDir');
+    } else if (this.tab === 'docker') {
+      if (this.dockerSubTab === 'containers') {
+        x = scr.drawButton(x, y, '🐚 进Shell', 'dockerExec', null, { primary: true });
+        x = scr.drawButton(x, y, '📜 日志', 'dockerLogs');
+        x = scr.drawButton(x, y, '📡 实时日志', 'dockerLogsFollow');
+        x = scr.drawButton(x, y, '▶ 启动', 'dockerStart');
+        x = scr.drawButton(x, y, '⏸ 停止', 'dockerStop');
+        x = scr.drawButton(x, y, '🔄 重启', 'dockerRestart');
+        x = scr.drawButton(x, y, '🔍 详情', 'dockerInspect');
+        scr.drawButton(x, y, '✕ 删除', 'dockerRemove', null, { danger: true });
+      } else if (this.dockerSubTab === 'images') {
+        x = scr.drawButton(x, y, '⬇ 拉取镜像', 'dockerPull', null, { primary: true });
+        x = scr.drawButton(x, y, '🧹 清理无用资源', 'dockerPrune');
+        scr.drawButton(x, y, '✕ 删除镜像', 'dockerRemove', null, { danger: true });
+      } else {
+        x = scr.drawButton(x, y, '▶ Up -d', 'dockerStart', null, { primary: true });
+        x = scr.drawButton(x, y, '🔄 Restart', 'dockerRestart');
+        x = scr.drawButton(x, y, '⏹ Down', 'dockerStop', null, { danger: true });
+      }
     } else if (this.isAgentTab()) {
       x = scr.drawButton(x, y, '▶ 恢复会话', 'resumeSession', null, { primary: true });
       if (this.tab === 'sessions') {

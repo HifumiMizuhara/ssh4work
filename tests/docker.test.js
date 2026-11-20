@@ -89,3 +89,53 @@ test('ClaudeVpsApp renders Docker tab across containers, images, and compose sub
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('Docker tab skips disabled first server and pure-keyboard focus/palette triggers top & bottom buttons', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh4work-tui-nav-'));
+  try {
+    const app = new ClaudeVpsApp({ configPath: path.join(tmpDir, 'profiles.json') });
+    const s1 = app.store.upsert({ name: 'NoDocker', host: '10.0.0.1', disabledPlugins: ['docker-devops'] });
+    const s2 = app.store.upsert({ name: 'HasDocker', host: '10.0.0.2' });
+    app.plugins.installRemote({
+      id: 'docker-devops',
+      name: 'Docker',
+      version: '1.2.0',
+      description: 'Docker tab',
+      tab: { id: 'docker', label: 'Docker', agentType: 'docker', requiresServer: true },
+    });
+
+    app.activeProfile = s1;
+    app.loadDocker = async () => {};
+    await app.dispatchAction('switchTab', 'docker');
+    assert.equal(app.tab, 'docker');
+    assert.equal(app.activeProfile.id, s2.id);
+
+    // Populate _lastScreen with buttons (top + bottom)
+    const scr = new ScreenBuffer(100, 24);
+    scr.begin({ clear: false });
+    scr.drawButton(1, 1, '1.服务器', 'switchTab', 'profiles');
+    scr.drawButton(12, 1, '🧩 插件', 'openPlugins');
+    scr.drawButton(1, 23, '+ 新建', 'newProfile');
+    app._lastScreen = scr;
+
+    // Shift+Tab -> top bar focus -> move right to [🧩 插件] -> Enter opens plugins modal
+    await app.handleKey({ type: 'key', name: 'shift-tab', char: '', ctrl: false });
+    assert.equal(app.uiFocusZone, 'top');
+    await app.handleKey({ type: 'key', name: 'right', char: '', ctrl: false });
+    assert.equal(app.uiFocusBtnIdx, 1);
+    await app.handleKey({ type: 'key', name: 'enter', char: '', ctrl: false });
+    assert.equal(app.uiFocusZone, 'content');
+    assert.equal(app.modal?.type, 'plugins');
+
+    // Close modal, open Action Palette with '?' -> lists all top & bottom buttons
+    app.modal = null;
+    await app.handleKey({ type: 'key', name: '?', char: '?', ctrl: false });
+    assert.equal(app.modal?.type, 'actionPalette');
+    assert.equal(app.modal.items.length, 3);
+    app.modal.idx = 2; // '+ 新建' on bottom bar
+    await app.handleKey({ type: 'key', name: 'enter', char: '', ctrl: false });
+    assert.equal(app.modal?.type, 'profileForm');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

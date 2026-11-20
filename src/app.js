@@ -233,6 +233,8 @@ export class ClaudeVpsApp {
     this.dockerOnlyRunning = false;
     this.dockerIdx = 0;
     this.dockerScroll = 0;
+    this.uiFocusZone = 'content'; // 'content' | 'top' | 'bottom'
+    this.uiFocusBtnIdx = 0;
 
     this.tab = 'profiles'; // 'profiles' | 'files' | 'sessions'
     this.statusMsg = this.sshEnv.hasSsh ? this.sshEnv.agentMessage : this.sshEnv.agentMessage;
@@ -1694,6 +1696,12 @@ export class ClaudeVpsApp {
           Math.min(Math.max(0, this.modal.catalog.length - 1), this.modal.idx + (delta > 0 ? 1 : -1))
         );
         this.render();
+      } else if (this.modal.type === 'actionPalette') {
+        this.modal.idx = Math.max(
+          0,
+          Math.min(Math.max(0, this.modal.items.length - 1), this.modal.idx + (delta > 0 ? 1 : -1))
+        );
+        this.render();
       } else if (this.modal.type === 'pluginServerConfig') {
         const len = this.store.list().length;
         this.modal.idx = Math.max(0, Math.min(Math.max(0, len - 1), this.modal.idx + (delta > 0 ? 1 : -1)));
@@ -1823,6 +1831,7 @@ export class ClaudeVpsApp {
           if (eligible.length === 0) {
             this.tab = payload;
             this.sessions = [];
+            this.dockerData = { containers: [], images: [], compose: [], networks: [], volumes: [], loadedForProfileId: null };
             this.setStatus('所有服务器均已禁用该插件，可在插件管理或服务器配置中启用', true);
             this.render();
             return;
@@ -1835,7 +1844,8 @@ export class ClaudeVpsApp {
                 : eligible[0];
             this.activeProfile = picked;
             this.store.setActive(picked.id);
-            this.ensureServerTab(picked);
+            const switchedTab = this.ensureServerTab(picked);
+            if (switchedTab) this.activeServerTabId = switchedTab.id;
           }
         }
         if (payload === 'terminal') {
@@ -2227,6 +2237,24 @@ export class ClaudeVpsApp {
         return;
       case 'openPlugins':
         this.openPluginsModal();
+        return;
+      case 'actionPaletteSelect':
+        if (this.modal?.type === 'actionPalette') {
+          this.modal.idx = payload;
+          if (fromTap) return this.dispatchAction('actionPaletteRun');
+          this.render();
+        }
+        return;
+      case 'actionPaletteRun':
+        if (this.modal?.type === 'actionPalette') {
+          const item = this.modal.items[this.modal.idx];
+          this.modal = null;
+          if (item) {
+            await this.dispatchAction(item.action, item.payload);
+          } else {
+            this.render();
+          }
+        }
         return;
       case 'openAppUpdate':
         await this.openAppUpdateModal({ force: false });
@@ -3541,6 +3569,49 @@ export class ClaudeVpsApp {
 
     if (ev.ctrl && ev.name === 'c') return this.stop();
 
+    // Pure-keyboard TUI navigation for top & bottom button bars (Shift+Tab / F6 / F10) and Action Palette (? / F1 / Ctrl+P)
+    if (ev.name === '?' || ev.char === '?' || ev.name === 'f1' || (ev.ctrl && ev.name === 'p')) {
+      this.openActionPalette();
+      return;
+    }
+    if (ev.name === 'shift-tab' || ev.name === 'f6' || ev.name === 'f10') {
+      const zones = ['content', 'top', 'bottom'];
+      const nextZone = zones[(zones.indexOf(this.uiFocusZone) + 1) % zones.length];
+      this.uiFocusZone = nextZone;
+      this.uiFocusBtnIdx = 0;
+      this.render();
+      return;
+    }
+
+    if (this.uiFocusZone !== 'content') {
+      const btns = this.getZoneButtons(this._lastScreen, this.uiFocusZone);
+      if (ev.name === 'escape') {
+        this.uiFocusZone = 'content';
+        this.render();
+        return;
+      }
+      if (btns.length > 0) {
+        if (ev.name === 'left' || ev.name === 'up') {
+          this.uiFocusBtnIdx = (this.uiFocusBtnIdx - 1 + btns.length) % btns.length;
+          this.render();
+          return;
+        }
+        if (ev.name === 'right' || ev.name === 'down') {
+          this.uiFocusBtnIdx = (this.uiFocusBtnIdx + 1) % btns.length;
+          this.render();
+          return;
+        }
+        if (ev.name === 'enter' || ev.name === 'space') {
+          const picked = btns[Math.max(0, Math.min(btns.length - 1, this.uiFocusBtnIdx))];
+          this.uiFocusZone = 'content';
+          if (picked) return this.dispatchAction(picked.action, picked.payload);
+          this.render();
+          return;
+        }
+      }
+      this.uiFocusZone = 'content';
+    }
+
     // Global tab switching (core SSH tabs + enabled plugin tabs)
     const pluginTabs = this.plugins.getEnabledTabs();
     const navTabs = ['profiles', 'files', 'terminal', ...pluginTabs.map((t) => t.id)];
@@ -3548,7 +3619,7 @@ export class ClaudeVpsApp {
     if (numKey >= 1 && numKey <= navTabs.length) {
       return this.dispatchAction('switchTab', navTabs[numKey - 1]);
     }
-    if ((ev.char === '[' || ev.char === ']') && this.serverTabs.length > 1) {
+    if ((ev.char === '[' || ev.char === ']') && !this.isAgentTab() && this.tab !== 'docker' && this.serverTabs.length > 1) {
       const curIdx = this.serverTabs.findIndex((t) => t.id === this.activeServerTabId);
       const baseIdx = curIdx >= 0 ? curIdx : 0;
       const step = ev.char === ']' ? 1 : -1;
@@ -3556,8 +3627,11 @@ export class ClaudeVpsApp {
       return this.dispatchAction('switchServerTab', this.serverTabs[nextIdx].id);
     }
     if (ev.name === 'tab') {
-      const order = this.activeProfile ? ['profiles', 'files', 'sessions'] : ['profiles'];
-      const next = order[(order.indexOf(this.tab) + 1) % order.length];
+      const order = this.activeProfile
+        ? ['profiles', 'files', ...pluginTabs.map((t) => t.id)]
+        : ['profiles', ...pluginTabs.map((t) => t.id)];
+      const curIdx = order.indexOf(this.tab);
+      const next = order[(curIdx >= 0 ? curIdx + 1 : 0) % order.length];
       return this.dispatchAction('switchTab', next);
     }
 
@@ -3907,6 +3981,15 @@ export class ClaudeVpsApp {
       this.render();
       return;
     }
+    if (m.type === 'actionPalette') {
+      if (ev.name === 'up' && m.items.length > 0) m.idx = Math.max(0, m.idx - 1);
+      else if (ev.name === 'down' && m.items.length > 0) m.idx = Math.min(m.items.length - 1, m.idx + 1);
+      else if (ev.name === 'pageup' && m.items.length > 0) m.idx = Math.max(0, m.idx - 8);
+      else if (ev.name === 'pagedown' && m.items.length > 0) m.idx = Math.min(m.items.length - 1, m.idx + 8);
+      else if (ev.name === 'enter' || ev.name === 'space') return this.dispatchAction('actionPaletteRun');
+      this.render();
+      return;
+    }
     if (m.type === 'plugins') {
       if (ev.name === 'up') m.idx = Math.max(0, m.idx - 1);
       else if (ev.name === 'down') m.idx = Math.min(Math.max(0, m.catalog.length - 1), m.idx + 1);
@@ -3936,6 +4019,39 @@ export class ClaudeVpsApp {
   }
 
   // ==================== Rendering ====================
+
+  getZoneButtons(scr, zone) {
+    if (!scr || !Array.isArray(scr.buttons)) return [];
+    const topMaxY = this.serverTabs.length > 0 ? 2 : 1;
+    if (zone === 'top') return scr.buttons.filter((b) => b.y <= topMaxY);
+    if (zone === 'bottom') return scr.buttons.filter((b) => b.y > topMaxY);
+    return [];
+  }
+
+  openActionPalette() {
+    const scr = this._lastScreen;
+    const topMaxY = this.serverTabs.length > 0 ? 2 : 1;
+    const buttons = Array.isArray(scr?.buttons) ? scr.buttons : [];
+    const items = buttons.map((b) => ({
+      zone: b.y <= topMaxY ? '顶部栏' : b.y >= (scr?.rows || 30) - 2 ? '底部栏' : '子菜单',
+      label: b.label,
+      action: b.action,
+      payload: b.payload,
+    }));
+    if (items.length === 0) {
+      this.setStatus('当前界面暂无可用按钮', true);
+      this.render();
+      return;
+    }
+    this.modal = {
+      type: 'actionPalette',
+      title: '🔘 按钮与命令面板 (? / Shift+Tab 切换焦点)',
+      items,
+      idx: 0,
+      scroll: 0,
+    };
+    this.render();
+  }
 
   getThemeAccent() {
     const theme = this.store.getSettings().theme || 'cyber';
@@ -4061,12 +4177,24 @@ export class ClaudeVpsApp {
     scr.drawRule(rows - 2);
     this.renderActionBar(scr, rows - 1);
 
-    const statusText = this.loadingText || this.statusMsg || '';
-    const statusStyle = this.loadingText
+    let statusText = this.loadingText || this.statusMsg || '';
+    let statusStyle = this.loadingText
       ? `${ANSI.fg.brightYellow}${ANSI.bold}`
       : this.statusIsError
         ? ANSI.fg.red
         : ANSI.fg.gray;
+
+    if (!this.modal && this.uiFocusZone !== 'content') {
+      const zoneBtns = this.getZoneButtons(scr, this.uiFocusZone);
+      if (zoneBtns.length > 0) {
+        this.uiFocusBtnIdx = Math.max(0, Math.min(zoneBtns.length - 1, this.uiFocusBtnIdx));
+        const fb = zoneBtns[this.uiFocusBtnIdx];
+        scr.writeAt(fb.x1, fb.y, fb.text, `\x1b[43m${ANSI.fg.black}${ANSI.bold}`);
+        const zoneLabel = this.uiFocusZone === 'top' ? '顶部栏焦点' : '操作栏焦点';
+        statusText = `[${zoneLabel}] 当前: [${fb.label}] | ←/→ 选按钮 | Enter 触发 | Shift+Tab 切换区域 | Esc 返回列表`;
+        statusStyle = `${ANSI.fg.brightYellow}${ANSI.bold}`;
+      }
+    }
     scr.drawLine(rows, statusText, statusStyle);
 
     // Modal overlay if active
@@ -4309,6 +4437,9 @@ export class ClaudeVpsApp {
     if (eligibleServers.length === 0) {
       scr.writeAt(sx, headerRow, '无可用服务器 (均已禁用此插件)', ANSI.fg.red);
       return;
+    }
+    if (!this.activeProfile || (pluginId && this.plugins.isDisabledForProfile(pluginId, this.activeProfile))) {
+      this.activeProfile = eligibleServers[0];
     }
     for (const srv of eligibleServers) {
       const isCur = this.activeProfile?.id === srv.id;
@@ -5049,6 +5180,27 @@ export class ClaudeVpsApp {
       let bx = inner.x;
       bx = scr.drawButton(bx, inner.y + inner.h - 1, '✓ 导入选中', 'modalSubmit', null, { primary: true });
       scr.drawButton(bx, inner.y + inner.h - 1, '✕ 取消', 'modalCancel');
+    } else if (m.type === 'actionPalette') {
+      const viewH = inner.h - 2;
+      m.scroll = this.computeScroll(m.idx, m.scroll, viewH, m.items.length);
+      for (let i = 0; i < viewH; i++) {
+        const idx = m.scroll + i;
+        if (idx >= m.items.length) break;
+        const it = m.items[idx];
+        const sel = idx === m.idx;
+        const rowY = inner.y + i;
+        const text = `${sel ? '> ' : '  '}[${it.zone}] ${it.label}`;
+        scr.writeAt(
+          inner.x,
+          rowY,
+          padEndWidth(truncateToWidth(text, inner.w), inner.w),
+          sel ? `${ANSI.bg.cyan}${ANSI.fg.black}${ANSI.bold}` : ANSI.fg.white
+        );
+        scr.addHitBox(inner.x, rowY, inner.x + inner.w - 1, rowY, 'actionPaletteSelect', idx);
+      }
+      let bx = inner.x;
+      bx = scr.drawButton(bx, inner.y + inner.h - 1, '✓ 执行选中 (Enter)', 'actionPaletteRun', null, { primary: true });
+      scr.drawButton(bx, inner.y + inner.h - 1, '关闭 (Esc)', 'modalCancel');
     } else if (m.type === 'appUpdate') {
       const info = m.info || {};
       const curVer = info.currentVersion || getCurrentVersion();

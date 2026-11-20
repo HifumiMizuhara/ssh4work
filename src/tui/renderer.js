@@ -38,6 +38,7 @@ export class ScreenBuffer {
     this.rowChunks = Array.from({ length: this.rows }, () => []);
     this.rowStrings = null;
     this.hitBoxes = [];
+    this.buttons = [];
     this._cursor = null;
     this._clipMaxX = null;
     this._clear = true;
@@ -90,6 +91,7 @@ export class ScreenBuffer {
     this.rowChunks = Array.from({ length: this.rows }, () => []);
     this.rowStrings = null;
     this.hitBoxes = [];
+    this.buttons = [];
     this._cursor = null;
     this._clipMaxX = null;
     this._plainOps = Array.from({ length: this.rows }, () => []);
@@ -166,6 +168,7 @@ export class ScreenBuffer {
 
     this.writeAt(x, y, text, style);
     this.addHitBox(x, y, x + w - 1, y, action, payload);
+    this.buttons.push({ x1: x, y, x2: x + w - 1, text, label, action, payload });
     return x + w + 1;
   }
 

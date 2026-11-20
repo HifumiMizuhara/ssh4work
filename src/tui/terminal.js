@@ -87,7 +87,16 @@ export function parseInputEvents(buf) {
           '5~': 'pageup',
           '6~': 'pagedown',
           '3~': 'delete',
+          '11~': 'f1',
           '12~': 'f2',
+          '13~': 'f3',
+          '14~': 'f4',
+          '15~': 'f5',
+          '17~': 'f6',
+          '18~': 'f7',
+          '19~': 'f8',
+          '20~': 'f9',
+          '21~': 'f10',
           Z: 'shift-tab',
         };
         const csiU = seq.match(/^(\d+)(?:;(\d+))?u$/);
